@@ -369,15 +369,15 @@ def plane_axes_and_extent(meta, axis):
     }
 
 
-def output_name(data_file, field_label, axis, slice_tag):
+def output_name(data_file, field_label, axis, slice_tag, output_format):
     """Return the default output name for one slice image."""
     directory = os.path.dirname(os.path.abspath(data_file))
     output_dir = os.path.join(directory, "slice_plots")
     os.makedirs(output_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(data_file))[0]
     if slice_tag in {"xy_center", "xy_face", "yz_face", "zx_face"}:
-        return os.path.join(output_dir, f"{base}_{slice_tag}_{field_label}.png")
-    return os.path.join(output_dir, f"{base}_{PLANE_NAMES[axis]}_{slice_tag}_{field_label}.png")
+        return os.path.join(output_dir, f"{base}_{slice_tag}_{field_label}.{output_format}")
+    return os.path.join(output_dir, f"{base}_{PLANE_NAMES[axis]}_{slice_tag}_{field_label}.{output_format}")
 
 
 def apply_width(ax, meta, axis, width):
@@ -394,8 +394,23 @@ def apply_width(ax, meta, axis, width):
     ax.set_ylim(ymid - half, ymid + half)
 
 
-def render_plane_image(plane, meta, axis, plane_index, field_label, latex_label, cmap, width, output, plot):
-    """Render one plane to PNG on rank 0."""
+def format_colorbar_ticklabels(tick_values):
+    """Format colorbar ticks, collapsing roundoff-scale labels to 0.0."""
+    tick_values = np.asarray(tick_values, dtype=np.float64)
+    reference = max(float(np.max(np.abs(tick_values))), 1.0e-30)
+    zero_cutoff = max(1.0e-12, 1.0e-6 * reference)
+
+    labels = []
+    for value in tick_values:
+        if abs(float(value)) <= zero_cutoff:
+            labels.append("0.0")
+        else:
+            labels.append(f"{value:.2g}")
+    return labels
+
+
+def render_plane_image(plane, meta, axis, plane_index, field_label, latex_label, cmap, width, output, plot, save_dpi):
+    """Render one plane to disk on rank 0."""
     plane = np.asarray(plane, dtype=np.float64).copy()
     plane[np.abs(plane) < 1.0e-12] = 0.0
     plane = np.round(plane, decimals=10)
@@ -419,10 +434,10 @@ def render_plane_image(plane, meta, axis, plane_index, field_label, latex_label,
             tick_values = np.array([tick_values[0]])
         colorbar = fig.colorbar(image, ax=ax, label=latex_label, ticks=tick_values)
         colorbar.ax.tick_params(labelsize=20)
-        colorbar.ax.set_yticklabels([f"{value:.2g}" for value in tick_values])
+        colorbar.ax.set_yticklabels(format_colorbar_ticklabels(tick_values))
         colorbar.set_label(latex_label, size=24)
         fig.tight_layout()
-        fig.savefig(output, dpi=150)
+        fig.savefig(output, dpi=save_dpi)
         print(f"Saved: {output}")
         if plot:
             plt.show()
@@ -471,6 +486,8 @@ def run_visualization(
     slice_specs=None,
     assume_structured_h5=False,
     backend_name="heffte_fftw",
+    output_format="pdf",
+    save_dpi=300,
 ):
     """Render one or more slice images from a structured HDF5 velocity file."""
     if comm is None:
@@ -527,8 +544,20 @@ def run_visualization(
                     f"  Slice normal={axis_name}, index={plane_index}, "
                     f"coord={coord_value:.6g}, step={meta['step']}, time={meta['time']:.6g}"
                 )
-                rendered = output or output_name(prepared_path, field_label, axis_name, slice_tag)
-                render_plane_image(plane, meta, axis_name, plane_index, field_label, latex_label, cmap, width, rendered, plot)
+                rendered = output or output_name(prepared_path, field_label, axis_name, slice_tag, output_format)
+                render_plane_image(
+                    plane,
+                    meta,
+                    axis_name,
+                    plane_index,
+                    field_label,
+                    latex_label,
+                    cmap,
+                    width,
+                    rendered,
+                    plot,
+                    save_dpi,
+                )
                 outputs.append(rendered)
             rendered = comm.bcast(rendered, root=0)
             comm.Barrier()
@@ -556,7 +585,9 @@ def main():
     )
     parser.add_argument("--cmap", default="RdBu_r", help="Matplotlib colormap")
     parser.add_argument("--width", type=float, default=None, help="Optional square plot width in domain units")
-    parser.add_argument("--output", default=None, help="Optional output PNG path for a single slice")
+    parser.add_argument("--format", default="pdf", choices=["pdf", "png"], help="Output image format. Default is pdf.")
+    parser.add_argument("--dpi", type=int, default=300, help="Raster save DPI. Default is 300.")
+    parser.add_argument("--output", default=None, help="Optional output path for a single slice")
     parser.add_argument("--plot", action="store_true", help="Also display the plot on rank 0 after saving")
     parser.add_argument(
         "--backend",
@@ -575,4 +606,6 @@ def main():
         plot=args.plot,
         slice_specs=args.slice,
         backend_name=args.backend,
+        output_format=args.format,
+        save_dpi=args.dpi,
     )

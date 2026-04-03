@@ -113,17 +113,21 @@ What main.py now does:
 Files written by the integrated pipeline:
   - the structured .h5 is written next to the original .txt input
   - the FFT spectra .txt and spectra metadata .txt are written next to that .h5 file
-  - the slice PNGs are written under slice_plots/ next to that .h5 file
+  - the slice plots are written under slice_plots/ next to that .h5 file
 
 Default slice outputs from main.py:
-  - xy_center_velocity_magnitude
-  - xy_face_velocity_magnitude
-  - yz_face_velocity_magnitude
-  - zx_face_velocity_magnitude
-  - xy_center_vorticity_magnitude
-  - xy_face_vorticity_magnitude
-  - yz_face_vorticity_magnitude
-  - zx_face_vorticity_magnitude
+  - xy_center_velocity_magnitude.pdf
+  - xy_face_velocity_magnitude.pdf
+  - yz_face_velocity_magnitude.pdf
+  - zx_face_velocity_magnitude.pdf
+  - xy_center_vorticity_magnitude.pdf
+  - xy_face_vorticity_magnitude.pdf
+  - yz_face_vorticity_magnitude.pdf
+  - zx_face_vorticity_magnitude.pdf
+
+Slice output defaults:
+  - format: pdf
+  - save dpi: 300
 
 Canonical slice field names:
   - velocity_magnitude
@@ -146,7 +150,7 @@ slice workflow does not rebuild the full 3D volume in yt.  Instead it:
   1. Converts TXT to structured HDF5 once when needed
   2. Reads only the requested HDF5 plane(s) in parallel
   3. Gathers only the final 2D slice(s) to rank 0
-  4. Writes the PNG images from rank 0
+  4. Writes the slice image files from rank 0
 
 This is much more scalable for large runs and for requesting several slices.
 
@@ -187,11 +191,12 @@ Supported slice selectors:
 Optional interactive plotting:
 
   python tools/visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vorticity_magnitude --plot
+  python tools/visualize_velocity_yt.py data/SampledData0.h5 --format png --dpi 300
 
 Output:
 
-  data/slice_plots/SampledData0_xy_center_velocity_magnitude.png
-  data/slice_plots/SampledData0_xy_center_vorticity_magnitude.png
+  data/slice_plots/SampledData0_xy_center_velocity_magnitude.pdf
+  data/slice_plots/SampledData0_xy_center_vorticity_magnitude.pdf
 
 Notes:
   - --plot only displays from rank 0.

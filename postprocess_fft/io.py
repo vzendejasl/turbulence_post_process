@@ -156,10 +156,10 @@ def read_structured_local_fields(filename, local_box, comm):
     return vx, vy, vz
 
 
-def _spectra_output_stem(filename, step_number):
+def _spectra_output_stem(filename):
     directory = os.path.dirname(os.path.abspath(filename))
     base = os.path.splitext(os.path.basename(filename))[0]
-    return os.path.join(directory, f"{base}_step{step_number}_spectra")
+    return os.path.join(directory, f"{base}_spectra")
 
 
 def save_spectra(
@@ -185,7 +185,7 @@ def save_spectra(
     total_enstrophy,
 ):
     """Save spectra text plus a separate metadata text file."""
-    stem = _spectra_output_stem(filename, step_number)
+    stem = _spectra_output_stem(filename)
 
     summary = np.column_stack(
         (

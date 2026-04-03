@@ -67,7 +67,17 @@ Examples:
     )
     parser.add_argument("--slice-cmap", default="RdBu_r", help="Colormap for slice plots")
     parser.add_argument("--slice-width", type=float, default=None, help="Optional square plot width in domain units")
-    parser.add_argument("--slice-output", default=None, help="Optional PNG path for a single slice from a single input file")
+    parser.add_argument(
+        "--slice-format",
+        default="pdf",
+        choices=["pdf", "png"],
+        help="Slice image format. Default is pdf.",
+    )
+    parser.add_argument(
+        "--slice-output",
+        default=None,
+        help="Optional output path for a single slice from a single input file.",
+    )
     parser.add_argument("--slice-plot", action="store_true", help="Also display slice plots on rank 0")
     args = parser.parse_args()
 
@@ -136,6 +146,8 @@ Examples:
                     slice_specs=args.slice,
                     assume_structured_h5=True,
                     backend_name=args.backend,
+                    output_format=args.slice_format,
+                    save_dpi=300,
                 )
                 if rank == 0:
                     slice_outputs.extend(rendered)
