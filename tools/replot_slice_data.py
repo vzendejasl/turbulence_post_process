@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 
 import h5py
-import matplotlib.pyplot as plt
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -21,40 +20,11 @@ from postprocess_vis.slice_data import load_saved_slice
 from postprocess_vis.slice_data import plane_extent_from_arrays
 
 
-def _plot_style():
+def _yt_font_style():
     return {
-        "font.family": "serif",
-        "mathtext.fontset": "cm",
-        "axes.unicode_minus": False,
-        "font.size": 18,
-        "axes.labelsize": 22,
-        "xtick.labelsize": 18,
-        "ytick.labelsize": 18,
+        "family": "serif",
+        "size": 18,
     }
-
-
-def format_colorbar_ticklabels(tick_values):
-    """Format colorbar ticks, collapsing roundoff-scale labels to 0.0."""
-    tick_values = np.asarray(tick_values, dtype=np.float64)
-    reference = max(float(np.max(np.abs(tick_values))), 1.0e-30)
-    zero_cutoff = max(1.0e-12, 1.0e-6 * reference)
-
-    labels = []
-    for value in tick_values:
-        if abs(float(value)) <= zero_cutoff:
-            labels.append("0.0")
-        else:
-            labels.append(f"{value:.2g}")
-    return labels
-
-
-DEFAULT_INTERPOLATIONS = ("nearest", "bilinear")
-
-
-def interpolation_output_path(output, interpolation):
-    """Append the interpolation mode to one output filename."""
-    base, ext = os.path.splitext(output)
-    return f"{base}_{interpolation}{ext}"
 
 
 def print_summary(filepath):
@@ -80,97 +50,8 @@ def default_output_name(slice_file, field_name, slice_tag, output_format):
     return os.path.join(output_dir, f"{base}_{slice_tag}_{field_name}.{output_format}")
 
 
-def render_saved_slice(
-    slice_file,
-    field_name,
-    slice_tag,
-    cmap,
-    width,
-    vmin,
-    vmax,
-    output,
-    output_format,
-    plot,
-    dpi,
-    figure_size,
-):
-    """Render one saved slice plane to disk and/or screen with multiple interpolation styles."""
-    saved = load_saved_slice(slice_file, field_name, slice_tag)
-    values = np.asarray(saved["values"], dtype=np.float64).copy()
-    values[np.abs(values) < 1.0e-12] = 0.0
-    values = np.round(values, decimals=10)
-
-    attrs = saved["attrs"]
-    horizontal_coords = saved["coord_horizontal"]
-    vertical_coords = saved["coord_vertical"]
-    extent = plane_extent_from_arrays(horizontal_coords, vertical_coords)
-    output_path = output or default_output_name(slice_file, field_name, slice_tag, output_format)
-
-    tick_values = np.linspace(float(np.min(values)), float(np.max(values)), 8)
-    if vmin is not None or vmax is not None:
-        tick_values = np.linspace(
-            float(np.min(values) if vmin is None else vmin),
-            float(np.max(values) if vmax is None else vmax),
-            8,
-        )
-    if np.allclose(tick_values[0], tick_values[-1]):
-        tick_values = np.array([tick_values[0]])
-
-    for interpolation in DEFAULT_INTERPOLATIONS:
-        interpolated_output = interpolation_output_path(output_path, interpolation)
-        with plt.rc_context(_plot_style()):
-            fig, ax = plt.subplots(figsize=(figure_size, figure_size))
-            image = ax.imshow(
-                values,
-                origin="lower",
-                extent=extent,
-                cmap=cmap,
-                interpolation=interpolation,
-                aspect="equal",
-                vmin=vmin,
-                vmax=vmax,
-            )
-            ax.set_box_aspect(1)
-            axis_label_map = {"x": r"$x$", "y": r"$y$", "z": r"$z$"}
-            ax.set_xlabel(axis_label_map[str(attrs["horizontal_axis"])], fontsize=22)
-            ax.set_ylabel(axis_label_map[str(attrs["vertical_axis"])], fontsize=22)
-            if width is not None:
-                x0, x1, y0, y1 = extent
-                xmid = 0.5 * (x0 + x1)
-                ymid = 0.5 * (y0 + y1)
-                half = 0.5 * float(width)
-                ax.set_xlim(xmid - half, xmid + half)
-                ax.set_ylim(ymid - half, ymid + half)
-
-            colorbar = fig.colorbar(image, ax=ax, label=str(attrs["plot_label"]), ticks=tick_values)
-            colorbar.ax.tick_params(labelsize=18)
-            colorbar.ax.set_yticklabels(format_colorbar_ticklabels(tick_values))
-            colorbar.set_label(str(attrs["plot_label"]), size=22)
-            fig.tight_layout()
-
-            fig.savefig(interpolated_output, dpi=dpi)
-            print(f"Saved: {interpolated_output}")
-            if plot:
-                plt.show()
-            plt.close(fig)
-
-
-def print_saved_slice_metadata(slice_file, field_name, slice_tag):
-    """Print metadata for one selected saved slice."""
-    saved = load_saved_slice(slice_file, field_name, slice_tag)
-    attrs = saved["attrs"]
-    print(f"Selected field: {field_name}")
-    print(f"Selected slice: {slice_tag}")
-    print(f"Axis: {attrs['axis']}")
-    print(f"Plane index: {int(attrs['plane_index'])}")
-    print(f"Plane coordinate: {float(attrs['plane_coord']):.6g}")
-    print(f"Horizontal axis: {attrs['horizontal_axis']}")
-    print(f"Vertical axis: {attrs['vertical_axis']}")
-    print(f"Values shape: {saved['values'].shape}")
-
-
-def print_yt_summary(slice_file, field_name, slice_tag):
-    """Construct a one-cell-thick yt uniform-grid dataset and print its summary."""
+def build_yt_slice_dataset(slice_file, field_name, slice_tag):
+    """Construct a one-cell-thick yt uniform-grid dataset from one saved slice."""
     import yt
 
     saved = load_saved_slice(slice_file, field_name, slice_tag)
@@ -197,25 +78,141 @@ def print_yt_summary(slice_file, field_name, slice_tag):
 
     if axis == "x":
         data = values[np.newaxis, :, :]
-        dims = data.shape
         bbox = np.array([[plane_coord, plane_coord + dx], [y0, y1], [z0, z1]], dtype=np.float64)
     elif axis == "y":
         data = values[:, np.newaxis, :]
-        dims = data.shape
         bbox = np.array([[x0, x1], [plane_coord, plane_coord + dy], [z0, z1]], dtype=np.float64)
     else:
         data = values[:, :, np.newaxis]
-        dims = data.shape
         bbox = np.array([[x0, x1], [y0, y1], [plane_coord, plane_coord + dz]], dtype=np.float64)
 
     dataset = yt.load_uniform_grid(
         {field_name: data},
-        dims,
+        data.shape,
         bbox=bbox,
         nprocs=1,
         periodicity=(False, False, False),
         unit_system="cgs",
     )
+    return dataset, ("stream", field_name), saved
+
+
+def render_saved_slice(
+    slice_file,
+    field_name,
+    slice_tag,
+    cmap,
+    width,
+    vmin,
+    vmax,
+    output,
+    output_format,
+    plot,
+    dpi,
+    figure_size,
+):
+    """Render one saved slice plane to disk and/or screen with yt bicubic output."""
+    import yt
+
+    dataset, yt_field, saved = build_yt_slice_dataset(slice_file, field_name, slice_tag)
+    values = np.asarray(saved["values"], dtype=np.float64).copy()
+    values[np.abs(values) < 1.0e-12] = 0.0
+    values = np.round(values, decimals=10)
+
+    attrs = saved["attrs"]
+    output_path = output or default_output_name(slice_file, field_name, slice_tag, output_format)
+    zmin = float(np.min(values) if vmin is None else vmin)
+    zmax = float(np.max(values) if vmax is None else vmax)
+
+    slice_plot = yt.SlicePlot(dataset, str(attrs["axis"]), yt_field, center="c", origin="native")
+    slice_plot.set_log(yt_field, False)
+    slice_plot.set_cmap(yt_field, cmap)
+    slice_plot.set_axes_unit("unitary")
+    slice_plot.set_font(_yt_font_style())
+    slice_plot.set_figure_size(float(figure_size))
+    data_res = max(values.shape)
+    slice_plot.set_buff_size((data_res, data_res))
+    if not np.isclose(zmin, zmax):
+        slice_plot.set_zlim(yt_field, zmin=zmin, zmax=zmax)
+    slice_plot.set_minorticks("all", False)
+    slice_plot.set_colorbar_minorticks("all", False)
+    if width is not None:
+        slice_plot.set_width((float(width), "code_length"))
+
+    slice_plot.render()
+    window_plot = slice_plot.plots[yt_field]
+    window_plot.cb.set_label(str(attrs["plot_label"]))
+    image = window_plot.axes.images[0]
+    image.set_interpolation("bicubic")
+    if hasattr(image, "set_interpolation_stage"):
+        image.set_interpolation_stage("rgba")
+    saved_path = window_plot.save(output_path, mpl_kwargs={"dpi": dpi})
+    print(f"Saved: {saved_path}")
+    if plot:
+        slice_plot.show()
+
+
+# Legacy matplotlib replot path kept for future reference.
+# import matplotlib.pyplot as plt
+#
+# def render_saved_slice_matplotlib(
+#     slice_file,
+#     field_name,
+#     slice_tag,
+#     cmap,
+#     width,
+#     vmin,
+#     vmax,
+#     output,
+#     output_format,
+#     plot,
+#     dpi,
+#     figure_size,
+# ):
+#     saved = load_saved_slice(slice_file, field_name, slice_tag)
+#     values = np.asarray(saved["values"], dtype=np.float64).copy()
+#     values[np.abs(values) < 1.0e-12] = 0.0
+#     values = np.round(values, decimals=10)
+#     horizontal_coords = saved["coord_horizontal"]
+#     vertical_coords = saved["coord_vertical"]
+#     extent = plane_extent_from_arrays(horizontal_coords, vertical_coords)
+#     output_path = output or default_output_name(slice_file, field_name, slice_tag, output_format)
+#     fig, ax = plt.subplots(figsize=(figure_size, figure_size))
+#     image = ax.imshow(
+#         values,
+#         origin="lower",
+#         extent=extent,
+#         cmap=cmap,
+#         interpolation="bicubic",
+#         aspect="equal",
+#         vmin=vmin,
+#         vmax=vmax,
+#     )
+#     fig.colorbar(image, ax=ax, label=str(saved["attrs"]["plot_label"]))
+#     fig.tight_layout()
+#     fig.savefig(output_path, dpi=dpi)
+#     if plot:
+#         plt.show()
+#     plt.close(fig)
+
+
+def print_saved_slice_metadata(slice_file, field_name, slice_tag):
+    """Print metadata for one selected saved slice."""
+    saved = load_saved_slice(slice_file, field_name, slice_tag)
+    attrs = saved["attrs"]
+    print(f"Selected field: {field_name}")
+    print(f"Selected slice: {slice_tag}")
+    print(f"Axis: {attrs['axis']}")
+    print(f"Plane index: {int(attrs['plane_index'])}")
+    print(f"Plane coordinate: {float(attrs['plane_coord']):.6g}")
+    print(f"Horizontal axis: {attrs['horizontal_axis']}")
+    print(f"Vertical axis: {attrs['vertical_axis']}")
+    print(f"Values shape: {saved['values'].shape}")
+
+
+def print_yt_summary(slice_file, field_name, slice_tag):
+    """Construct a one-cell-thick yt uniform-grid dataset and print its summary."""
+    dataset, _, _ = build_yt_slice_dataset(slice_file, field_name, slice_tag)
 
     print("Constructed yt dataset:")
     print(f"  Dimensions: {tuple(int(v) for v in dataset.domain_dimensions)}")

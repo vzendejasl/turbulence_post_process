@@ -6,7 +6,6 @@ import argparse
 import os
 
 import h5py
-import matplotlib.pyplot as plt
 import numpy as np
 from mpi4py import MPI
 
@@ -39,16 +38,16 @@ BUILTIN_FIELD_MAP = {
     "wz": ("omega_z", "wz", r"$\omega_3$", "vorticity"),
 }
 
-PLANE_AXES = {
-    "x": ("z", "y"),
-    "y": ("z", "x"),
-    "z": ("y", "x"),
-}
-
 PLANE_NAMES = {
     "x": "yz",
     "y": "zx",
     "z": "xy",
+}
+
+PLANE_AXES = {
+    "x": ("z", "y"),
+    "y": ("z", "x"),
+    "z": ("y", "x"),
 }
 
 
@@ -88,15 +87,10 @@ def available_field_specs(filepath):
     return field_specs
 
 
-def _plot_style():
+def _yt_font_style():
     return {
-        "font.family": "serif",
-        "mathtext.fontset": "cm",
-        "axes.unicode_minus": False,
-        "font.size": 20,
-        "axes.labelsize": 24,
-        "xtick.labelsize": 20,
-        "ytick.labelsize": 20,
+        "family": "serif",
+        "size": 20,
     }
 
 
@@ -354,39 +348,6 @@ def compute_local_vorticity_fields(filepath, meta, comm, backend_name):
     }
 
 
-def axis_extent(coords):
-    """Return imshow extent bounds from 1D coordinates."""
-    if len(coords) == 1:
-        delta = 1.0
-    else:
-        delta = float(coords[1] - coords[0])
-    return float(coords[0]), float(coords[-1] + delta)
-
-
-def plane_axes_and_extent(meta, axis):
-    """Return plotting metadata for one plane orientation."""
-    x_coords = meta["x"]
-    y_coords = meta["y"]
-    z_coords = meta["z"]
-    if axis == "x":
-        horizontal = z_coords
-        vertical = y_coords
-    elif axis == "y":
-        horizontal = z_coords
-        vertical = x_coords
-    else:
-        horizontal = y_coords
-        vertical = x_coords
-
-    xmin, xmax = axis_extent(horizontal)
-    ymin, ymax = axis_extent(vertical)
-    return {
-        "horizontal_name": PLANE_AXES[axis][0],
-        "vertical_name": PLANE_AXES[axis][1],
-        "extent": [xmin, xmax, ymin, ymax],
-    }
-
-
 def output_name(data_file, field_label, axis, slice_tag, output_format):
     """Return the default output name for one slice image."""
     directory = os.path.dirname(os.path.abspath(data_file))
@@ -409,42 +370,45 @@ def output_source_path(data_file, dataset_name, field_family):
     return str(source_txt) if source_txt else data_file
 
 
-def apply_width(ax, meta, axis, width):
-    """Zoom the plot around the plane center when width is provided."""
-    if width is None:
-        return
-
-    axis_info = plane_axes_and_extent(meta, axis)
-    x0, x1, y0, y1 = axis_info["extent"]
-    xmid = 0.5 * (x0 + x1)
-    ymid = 0.5 * (y0 + y1)
-    half = 0.5 * float(width)
-    ax.set_xlim(xmid - half, xmid + half)
-    ax.set_ylim(ymid - half, ymid + half)
+def axis_bounds(coords):
+    """Return lower edge, upper edge, and spacing for one axis coordinate array."""
+    coords = np.asarray(coords, dtype=np.float64)
+    if len(coords) == 1:
+        delta = 1.0
+    else:
+        delta = float(coords[1] - coords[0])
+    return float(coords[0]), float(coords[-1] + delta), delta
 
 
-def format_colorbar_ticklabels(tick_values):
-    """Format colorbar ticks, collapsing roundoff-scale labels to 0.0."""
-    tick_values = np.asarray(tick_values, dtype=np.float64)
-    reference = max(float(np.max(np.abs(tick_values))), 1.0e-30)
-    zero_cutoff = max(1.0e-12, 1.0e-6 * reference)
+def build_yt_slice_dataset(plane, meta, axis, plane_index, field_label):
+    """Construct a one-cell-thick yt dataset from one extracted 2D plane."""
+    import yt
 
-    labels = []
-    for value in tick_values:
-        if abs(float(value)) <= zero_cutoff:
-            labels.append("0.0")
-        else:
-            labels.append(f"{value:.2g}")
-    return labels
+    plane = np.asarray(plane, dtype=np.float64)
+    x0, x1, dx = axis_bounds(meta["x"])
+    y0, y1, dy = axis_bounds(meta["y"])
+    z0, z1, dz = axis_bounds(meta["z"])
+    plane_coord = float(meta[axis][plane_index])
 
+    if axis == "x":
+        data = plane[np.newaxis, :, :]
+        bbox = np.array([[plane_coord, plane_coord + dx], [y0, y1], [z0, z1]], dtype=np.float64)
+    elif axis == "y":
+        data = plane[:, np.newaxis, :]
+        bbox = np.array([[x0, x1], [plane_coord, plane_coord + dy], [z0, z1]], dtype=np.float64)
+    else:
+        data = plane[:, :, np.newaxis]
+        bbox = np.array([[x0, x1], [y0, y1], [plane_coord, plane_coord + dz]], dtype=np.float64)
 
-DEFAULT_INTERPOLATIONS = ("nearest", "bilinear")
-
-
-def interpolation_output_path(output, interpolation):
-    """Append the interpolation mode to one output filename."""
-    base, ext = os.path.splitext(output)
-    return f"{base}_{interpolation}{ext}"
+    dataset = yt.load_uniform_grid(
+        {field_label: data},
+        data.shape,
+        bbox=bbox,
+        nprocs=1,
+        periodicity=(False, False, False),
+        unit_system="cgs",
+    )
+    return dataset, ("stream", field_label)
 
 
 def render_plane_image(
@@ -461,46 +425,86 @@ def render_plane_image(
     save_dpi,
     figure_size,
 ):
-    """Render one plane to disk on rank 0 with multiple interpolation styles."""
+    """Render one plane to disk on rank 0 with yt SlicePlot."""
+    import yt
+
     plane = np.asarray(plane, dtype=np.float64).copy()
     plane[np.abs(plane) < 1.0e-12] = 0.0
     plane = np.round(plane, decimals=10)
-    info = plane_axes_and_extent(meta, axis)
-    tick_values = np.linspace(float(np.min(plane)), float(np.max(plane)), 8)
-    if np.allclose(tick_values[0], tick_values[-1]):
-        tick_values = np.array([tick_values[0]])
+    zmin = float(np.min(plane))
+    zmax = float(np.max(plane))
+    dataset, yt_field = build_yt_slice_dataset(plane, meta, axis, plane_index, field_label)
+    slice_plot = yt.SlicePlot(dataset, axis, yt_field, center="c", origin="native")
+    slice_plot.set_log(yt_field, False)
+    slice_plot.set_cmap(yt_field, cmap)
+    slice_plot.set_axes_unit("unitary")
+    slice_plot.set_font(_yt_font_style())
+    slice_plot.set_figure_size(float(figure_size))
+    data_res = max(plane.shape)
+    slice_plot.set_buff_size((data_res, data_res))
+    if not np.isclose(zmin, zmax):
+        slice_plot.set_zlim(yt_field, zmin=zmin, zmax=zmax)
+    slice_plot.set_minorticks("all", False)
+    slice_plot.set_colorbar_minorticks("all", False)
+    if width is not None:
+        slice_plot.set_width((float(width), "code_length"))
 
-    outputs = []
-    for interpolation in DEFAULT_INTERPOLATIONS:
-        interpolated_output = interpolation_output_path(output, interpolation)
-        with plt.rc_context(_plot_style()):
-            fig, ax = plt.subplots(figsize=(figure_size, figure_size))
-            image = ax.imshow(
-                plane,
-                origin="lower",
-                extent=info["extent"],
-                cmap=cmap,
-                interpolation=interpolation,
-                aspect="equal",
-            )
-            ax.set_box_aspect(1)
-            axis_label_map = {"x": r"$x$", "y": r"$y$", "z": r"$z$"}
-            ax.set_xlabel(axis_label_map[info["horizontal_name"]], fontsize=24)
-            ax.set_ylabel(axis_label_map[info["vertical_name"]], fontsize=24)
-            apply_width(ax, meta, axis, width)
-            colorbar = fig.colorbar(image, ax=ax, label=latex_label, ticks=tick_values)
-            colorbar.ax.tick_params(labelsize=20)
-            colorbar.ax.set_yticklabels(format_colorbar_ticklabels(tick_values))
-            colorbar.set_label(latex_label, size=24)
-            fig.tight_layout()
-            fig.savefig(interpolated_output, dpi=save_dpi)
-            print(f"Saved: {interpolated_output}")
-            if plot:
-                plt.show()
-            plt.close(fig)
-        outputs.append(interpolated_output)
+    slice_plot.render()
+    window_plot = slice_plot.plots[yt_field]
+    window_plot.cb.set_label(latex_label)
+    image = window_plot.axes.images[0]
+    image.set_interpolation("bicubic")
+    if hasattr(image, "set_interpolation_stage"):
+        image.set_interpolation_stage("rgba")
+    saved_paths = [window_plot.save(output, mpl_kwargs={"dpi": save_dpi})]
+    for saved_path in saved_paths:
+        print(f"Saved: {saved_path}")
+    if plot:
+        slice_plot.show()
+    return list(saved_paths)
 
-    return outputs
+
+# Legacy matplotlib renderer reference kept for future use.
+# import matplotlib.pyplot as plt
+#
+# def render_plane_image_matplotlib(
+#     plane,
+#     meta,
+#     axis,
+#     plane_index,
+#     field_label,
+#     latex_label,
+#     cmap,
+#     width,
+#     output,
+#     plot,
+#     save_dpi,
+#     figure_size,
+# ):
+#     plane = np.asarray(plane, dtype=np.float64).copy()
+#     plane[np.abs(plane) < 1.0e-12] = 0.0
+#     plane = np.round(plane, decimals=10)
+#     info = plane_axes_and_extent(meta, axis)
+#     with plt.rc_context(_mpl_plot_style()):
+#         fig, ax = plt.subplots(figsize=(figure_size, figure_size))
+#         image = ax.imshow(
+#             plane,
+#             origin="lower",
+#             extent=info["extent"],
+#             cmap=cmap,
+#             interpolation="bicubic",
+#             aspect="equal",
+#         )
+#         ax.set_box_aspect(1)
+#         ax.set_xlabel(rf"${info['horizontal_name']}$", fontsize=24)
+#         ax.set_ylabel(rf"${info['vertical_name']}$", fontsize=24)
+#         apply_width(ax, meta, axis, width)
+#         colorbar = fig.colorbar(image, ax=ax, label=latex_label)
+#         fig.tight_layout()
+#         fig.savefig(output, dpi=save_dpi)
+#         if plot:
+#             plt.show()
+#         plt.close(fig)
 
 
 def build_slice_requests(meta, slice_specs, default_axis):
@@ -655,7 +659,7 @@ def run_visualization(
                     comm.Barrier()
             plane = gather_plane(axis_name, local_bounds, local_plane, meta["shape"], comm)
 
-            rendered = None
+            rendered_paths = []
             if rank == 0:
                 coord_value = meta[axis_name][plane_index]
                 print(
@@ -684,10 +688,10 @@ def run_visualization(
                     figure_size,
                 )
                 outputs.extend(rendered_paths)
-            rendered = comm.bcast(rendered, root=0)
+            rendered_paths = comm.bcast(rendered_paths, root=0)
             comm.Barrier()
             if rank != 0:
-                outputs.extend(interpolation_output_path(rendered, mode) for mode in DEFAULT_INTERPOLATIONS)
+                outputs.extend(rendered_paths)
 
     return outputs, (saved_slice_data_path if save_slice_data else None)
 
