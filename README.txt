@@ -120,6 +120,16 @@ Default slice outputs from main.py:
   - xy_face_velocity_magnitude
   - yz_face_velocity_magnitude
   - zx_face_velocity_magnitude
+  - xy_center_vorticity_magnitude
+  - xy_face_vorticity_magnitude
+  - yz_face_vorticity_magnitude
+  - zx_face_vorticity_magnitude
+
+Canonical slice field names:
+  - velocity_magnitude
+  - vorticity_magnitude
+  - vx, vy, vz
+  - wx, wy, wz
 
 Important:
   tools/convert_txt_to_hdf5.py deletes the original .txt after a successful TXT -> HDF5
@@ -156,9 +166,9 @@ How it works:
 
 Examples:
 
-  python tools/visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vx
-  mpirun -n 4 python tools/visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vx
-  mpirun -n 4 python tools/visualize_velocity_yt.py data/SampledData0.txt --slice z:center --field vx
+  python tools/visualize_velocity_yt.py data/SampledData0.h5
+  mpirun -n 4 python tools/visualize_velocity_yt.py data/SampledData0.h5
+  mpirun -n 4 python tools/visualize_velocity_yt.py data/SampledData0.txt
 
 Multiple slices in one run:
 
@@ -166,7 +176,7 @@ Multiple slices in one run:
     --slice z:center \
     --slice x:center \
     --slice y:frac=0.25 \
-    --field vx
+    --field vorticity_magnitude
 
 Supported slice selectors:
   center
@@ -176,11 +186,12 @@ Supported slice selectors:
 
 Optional interactive plotting:
 
-  python tools/visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vx --plot
+  python tools/visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vorticity_magnitude --plot
 
 Output:
 
   data/slice_plots/SampledData0_xy_center_velocity_magnitude.png
+  data/slice_plots/SampledData0_xy_center_vorticity_magnitude.png
 
 Notes:
   - --plot only displays from rank 0.

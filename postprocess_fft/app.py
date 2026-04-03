@@ -30,6 +30,7 @@ from .spectra import compensate_spectrum
 from .transform import backward_field
 from .transform import forward_field
 from .transform import get_backend
+from .transform import local_integer_wavenumber_mesh
 from .transform import local_wavenumber_mesh
 from .transform import print_component_ranges
 from .transform import verify_decomposition
@@ -186,8 +187,28 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
     _, E_rot = compute_energy_spectrum_from_modes(vx_r_k, vy_r_k, vz_r_k, shape, local_box, comm)
     _, Enst, total_enstrophy = compute_enstrophy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, local_box, comm)
     _, Hel = compute_helicity_spectrum_from_modes(vx_k, vy_k, vz_k, shape, local_box, comm)
+
+    KX_int, KY_int, KZ_int = local_integer_wavenumber_mesh(shape, local_box)
+    omega_x_k = 1j * (KY_int * vz_k - KZ_int * vy_k)
+    omega_y_k = 1j * (KZ_int * vx_k - KX_int * vz_k)
+    omega_z_k = 1j * (KX_int * vy_k - KY_int * vx_k)
+    omega_x = backward_field(plan, omega_x_k, local_shape)
+    omega_y = backward_field(plan, omega_y_k, local_shape)
+    omega_z = backward_field(plan, omega_z_k, local_shape)
+    vorticity_ke = global_mean_energy(omega_x, omega_y, omega_z, global_points, comm)
+
     if root:
         print(f"  Total enstrophy (fourier, code convention): {total_enstrophy:.8f}")
+        print(f"  Vorticity KE (real-space, code convention): {vorticity_ke:.8f}")
+
+    if not np.isclose(vorticity_ke, total_enstrophy, rtol=1.0e-10, atol=1.0e-12):
+        raise RuntimeError(
+            "Enstrophy sanity check failed: "
+            f"vorticity KE = {vorticity_ke:.16e}, "
+            f"enstrophy = {total_enstrophy:.16e}"
+        )
+    if root:
+        print("  Sanity check: vorticity KE matches enstrophy.")
 
     compute_energy_dissipation_enstrophy(vx_k, vy_k, vz_k, shape, local_box, comm, root)
 

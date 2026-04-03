@@ -10,19 +10,28 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mpi4py import MPI
 
+from postprocess_fft.io import read_structured_local_fields
+from postprocess_fft.layout import box_shape
+from postprocess_fft.layout import box_slices
+from postprocess_fft.layout import build_boxes
+from postprocess_fft.layout import choose_proc_grid
+from postprocess_fft.transform import backward_field
+from postprocess_fft.transform import forward_field
+from postprocess_fft.transform import get_backend
+from postprocess_fft.transform import local_wavenumber_mesh
+from postprocess_fft.common import heffte
 from postprocess_lib.prepare import ensure_structured_h5
 
 
 FIELD_MAP = {
-    "vmag": ("velocity_magnitude", "velocity_magnitude", r"$|\mathbf{u}|$"),
-    "mag": ("velocity_magnitude", "velocity_magnitude", r"$|\mathbf{u}|$"),
-    "velocity_magnitude": ("velocity_magnitude", "velocity_magnitude", r"$|\mathbf{u}|$"),
-    "vx": ("vx", "velocity_x", r"$u_1$"),
-    "vy": ("vy", "velocity_y", r"$u_2$"),
-    "vz": ("vz", "velocity_z", r"$u_3$"),
-    "velocity_x": ("vx", "velocity_x", r"$u_1$"),
-    "velocity_y": ("vy", "velocity_y", r"$u_2$"),
-    "velocity_z": ("vz", "velocity_z", r"$u_3$"),
+    "velocity_magnitude": ("velocity_magnitude", "velocity_magnitude", r"$|\mathbf{u}|$", "velocity"),
+    "vx": ("vx", "vx", r"$u_1$", "velocity"),
+    "vy": ("vy", "vy", r"$u_2$", "velocity"),
+    "vz": ("vz", "vz", r"$u_3$", "velocity"),
+    "vorticity_magnitude": ("vorticity_magnitude", "vorticity_magnitude", r"$|\boldsymbol{\omega}|$", "vorticity"),
+    "wx": ("omega_x", "wx", r"$\omega_1$", "vorticity"),
+    "wy": ("omega_y", "wy", r"$\omega_2$", "vorticity"),
+    "wz": ("omega_z", "wz", r"$\omega_3$", "vorticity"),
 }
 
 PLANE_AXES = {
@@ -93,6 +102,9 @@ def read_grid_metadata(filepath):
         "y": y_coords,
         "z": z_coords,
         "shape": (len(x_coords), len(y_coords), len(z_coords)),
+        "dx": float(x_full[1] - x_full[0]) if len(x_full) > 1 else 1.0,
+        "dy": float(y_full[1] - y_full[0]) if len(y_full) > 1 else 1.0,
+        "dz": float(z_full[1] - z_full[0]) if len(z_full) > 1 else 1.0,
         "step": step,
         "time": time_val,
     }
@@ -193,6 +205,61 @@ def gather_plane(axis, plane_index, local_bounds, local_plane, shape, comm):
     return global_plane
 
 
+def gather_plane_from_boxes(axis, local_box, local_field, shape, plane_index, comm):
+    """Gather one plane from a generic 3D box decomposition."""
+    rank = comm.Get_rank()
+    sx, sy, sz = box_slices(local_box)
+
+    bounds = None
+    piece = None
+    if axis == "x":
+        if sx.start <= plane_index < sx.stop:
+            local_index = plane_index - sx.start
+            piece = np.asarray(local_field[local_index, :, :], dtype=np.float64)
+            bounds = (sy.start, sy.stop, sz.start, sz.stop)
+    elif axis == "y":
+        if sy.start <= plane_index < sy.stop:
+            local_index = plane_index - sy.start
+            piece = np.asarray(local_field[:, local_index, :], dtype=np.float64)
+            bounds = (sx.start, sx.stop, sz.start, sz.stop)
+    else:
+        if sz.start <= plane_index < sz.stop:
+            local_index = plane_index - sz.start
+            piece = np.asarray(local_field[:, :, local_index], dtype=np.float64)
+            bounds = (sx.start, sx.stop, sy.start, sy.stop)
+
+    gathered = comm.gather((bounds, piece), root=0)
+    if rank != 0:
+        return None
+
+    nx, ny, nz = shape
+    if axis == "x":
+        plane = np.zeros((ny, nz), dtype=np.float64)
+        for bounds, piece in gathered:
+            if piece is None:
+                continue
+            y0, y1, z0, z1 = bounds
+            plane[y0:y1, z0:z1] = piece
+        return plane
+
+    if axis == "y":
+        plane = np.zeros((nx, nz), dtype=np.float64)
+        for bounds, piece in gathered:
+            if piece is None:
+                continue
+            x0, x1, z0, z1 = bounds
+            plane[x0:x1, z0:z1] = piece
+        return plane
+
+    plane = np.zeros((nx, ny), dtype=np.float64)
+    for bounds, piece in gathered:
+        if piece is None:
+            continue
+        x0, x1, y0, y1 = bounds
+        plane[x0:x1, y0:y1] = piece
+    return plane
+
+
 def extract_plane_parallel(filepath, dataset_name, axis, plane_index, meta, comm):
     """Read only the requested HDF5 plane in parallel."""
     shape = meta["shape"]
@@ -233,6 +300,40 @@ def extract_plane_parallel(filepath, dataset_name, axis, plane_index, meta, comm
                 local_plane = np.asarray(field[x_start:x_stop, :ny, plane_index], dtype=np.float64)
 
     return gather_plane(axis, plane_index, (x_start, x_stop), local_plane, shape, comm)
+
+
+def compute_local_vorticity_fields(filepath, meta, comm, backend_name):
+    """Compute distributed real-space vorticity components with HeFFTe."""
+    shape = meta["shape"]
+    proc_grid = choose_proc_grid(shape, comm.Get_size())
+    boxes = build_boxes(shape, proc_grid)
+    local_box = boxes[comm.Get_rank()]
+    local_shape = box_shape(local_box)
+    local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
+
+    backend = get_backend(backend_name)
+    plan = heffte.fft3d(backend, local_box, local_box, comm)
+    KX, KY, KZ = local_wavenumber_mesh(shape, local_box, meta["dx"], meta["dy"], meta["dz"])
+
+    vx_k = forward_field(plan, local_vx).reshape(local_shape, order="C")
+    vy_k = forward_field(plan, local_vy).reshape(local_shape, order="C")
+    vz_k = forward_field(plan, local_vz).reshape(local_shape, order="C")
+
+    omega_x_k = 1j * (KY * vz_k - KZ * vy_k)
+    omega_y_k = 1j * (KZ * vx_k - KX * vz_k)
+    omega_z_k = 1j * (KX * vy_k - KY * vx_k)
+
+    omega_x = backward_field(plan, omega_x_k, local_shape)
+    omega_y = backward_field(plan, omega_y_k, local_shape)
+    omega_z = backward_field(plan, omega_z_k, local_shape)
+
+    return {
+        "local_box": local_box,
+        "omega_x": omega_x,
+        "omega_y": omega_y,
+        "omega_z": omega_z,
+        "vorticity_magnitude": np.sqrt(omega_x**2 + omega_y**2 + omega_z**2),
+    }
 
 
 def axis_extent(coords):
@@ -295,6 +396,9 @@ def apply_width(ax, meta, axis, width):
 
 def render_plane_image(plane, meta, axis, plane_index, field_label, latex_label, cmap, width, output, plot):
     """Render one plane to PNG on rank 0."""
+    plane = np.asarray(plane, dtype=np.float64).copy()
+    plane[np.abs(plane) < 1.0e-12] = 0.0
+    plane = np.round(plane, decimals=10)
     info = plane_axes_and_extent(meta, axis)
     with plt.rc_context(_plot_style()):
         fig, ax = plt.subplots(figsize=(7.6, 6.2))
@@ -358,7 +462,7 @@ def build_slice_requests(meta, slice_specs, default_axis):
 def run_visualization(
     data_file,
     axis="z",
-    field_name="vx",
+    field_name=None,
     cmap="RdBu_r",
     width=None,
     output=None,
@@ -366,6 +470,7 @@ def run_visualization(
     comm=None,
     slice_specs=None,
     assume_structured_h5=False,
+    backend_name="heffte_fftw",
 ):
     """Render one or more slice images from a structured HDF5 velocity file."""
     if comm is None:
@@ -373,12 +478,16 @@ def run_visualization(
     rank = comm.Get_rank()
 
     prepared_path = data_file if assume_structured_h5 else ensure_structured_h5(data_file)
-    dataset_name, field_label, latex_label = canonical_field_name(field_name)
+    requested_fields = [field_name] if field_name is not None else ["velocity_magnitude", "vorticity_magnitude"]
+    field_specs = [canonical_field_name(name) for name in requested_fields]
     meta = read_grid_metadata(prepared_path)
     requests = build_slice_requests(meta, slice_specs, axis)
 
-    if output and len(requests) != 1:
+    if output and (len(requests) != 1 or len(field_specs) != 1):
         raise ValueError("--output can only be used when rendering a single slice.")
+
+    needs_vorticity = any(spec[3] == "vorticity" for spec in field_specs)
+    vorticity_cache = None
 
     if rank == 0:
         print()
@@ -387,25 +496,44 @@ def run_visualization(
         print("-" * 60)
         print(f"Loading {prepared_path} with {comm.Get_size()} MPI ranks...")
         print(f"Structured domain dimensions: {meta['shape']}")
-        print(f"Rendering {len(requests)} slice(s) for field '{field_label}'...")
+        print(f"Rendering {len(requests)} slice(s) for {len(field_specs)} field set(s)...")
+
+    if needs_vorticity:
+        if rank == 0:
+            print("Computing distributed vorticity field with HeFFTe inverse FFT...")
+        vorticity_cache = compute_local_vorticity_fields(prepared_path, meta, comm, backend_name)
 
     outputs = []
-    for axis_name, plane_index, slice_tag in requests:
-        plane = extract_plane_parallel(prepared_path, dataset_name, axis_name, plane_index, meta, comm)
-        rendered = None
+    for dataset_name, field_label, latex_label, field_family in field_specs:
         if rank == 0:
-            coord_value = meta[axis_name][plane_index]
-            print(
-                f"  Slice normal={axis_name}, index={plane_index}, "
-                f"coord={coord_value:.6g}, step={meta['step']}, time={meta['time']:.6g}"
-            )
-            rendered = output or output_name(prepared_path, field_label, axis_name, slice_tag)
-            render_plane_image(plane, meta, axis_name, plane_index, field_label, latex_label, cmap, width, rendered, plot)
-            outputs.append(rendered)
-        rendered = comm.bcast(rendered, root=0)
-        comm.Barrier()
-        if rank != 0:
-            outputs.append(rendered)
+            print(f"Field: {field_label}")
+        for axis_name, plane_index, slice_tag in requests:
+            if field_family == "vorticity":
+                plane = gather_plane_from_boxes(
+                    axis_name,
+                    vorticity_cache["local_box"],
+                    vorticity_cache[dataset_name],
+                    meta["shape"],
+                    plane_index,
+                    comm,
+                )
+            else:
+                plane = extract_plane_parallel(prepared_path, dataset_name, axis_name, plane_index, meta, comm)
+
+            rendered = None
+            if rank == 0:
+                coord_value = meta[axis_name][plane_index]
+                print(
+                    f"  Slice normal={axis_name}, index={plane_index}, "
+                    f"coord={coord_value:.6g}, step={meta['step']}, time={meta['time']:.6g}"
+                )
+                rendered = output or output_name(prepared_path, field_label, axis_name, slice_tag)
+                render_plane_image(plane, meta, axis_name, plane_index, field_label, latex_label, cmap, width, rendered, plot)
+                outputs.append(rendered)
+            rendered = comm.bcast(rendered, root=0)
+            comm.Barrier()
+            if rank != 0:
+                outputs.append(rendered)
 
     return outputs
 
@@ -422,14 +550,20 @@ def main():
     parser.add_argument("--axis", default="z", choices=["x", "y", "z"], help="Default center-slice axis if --slice is omitted")
     parser.add_argument(
         "--field",
-        default="velocity_magnitude",
+        default=None,
         choices=sorted(FIELD_MAP),
-        help="Field to plot. Default is velocity magnitude.",
+        help="Field to plot. If omitted, render both velocity and vorticity magnitudes.",
     )
     parser.add_argument("--cmap", default="RdBu_r", help="Matplotlib colormap")
     parser.add_argument("--width", type=float, default=None, help="Optional square plot width in domain units")
     parser.add_argument("--output", default=None, help="Optional output PNG path for a single slice")
     parser.add_argument("--plot", action="store_true", help="Also display the plot on rank 0 after saving")
+    parser.add_argument(
+        "--backend",
+        default="heffte_fftw",
+        choices=["heffte_fftw", "heffte_stock"],
+        help="HeFFTe backend used when deriving vorticity from FFTs.",
+    )
     args = parser.parse_args()
     run_visualization(
         args.data_file,
@@ -440,4 +574,5 @@ def main():
         output=args.output,
         plot=args.plot,
         slice_specs=args.slice,
+        backend_name=args.backend,
     )

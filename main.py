@@ -52,9 +52,18 @@ Examples:
     )
     parser.add_argument(
         "--slice-field",
-        default="velocity_magnitude",
-        choices=["vmag", "mag", "velocity_magnitude", "vx", "vy", "vz", "velocity_x", "velocity_y", "velocity_z"],
-        help="Field for slice plots. Default is velocity magnitude.",
+        default=None,
+        choices=[
+            "velocity_magnitude",
+            "vx",
+            "vy",
+            "vz",
+            "vorticity_magnitude",
+            "wx",
+            "wy",
+            "wz",
+        ],
+        help="Field for slice plots. If omitted, render both velocity and vorticity magnitudes.",
     )
     parser.add_argument("--slice-cmap", default="RdBu_r", help="Colormap for slice plots")
     parser.add_argument("--slice-width", type=float, default=None, help="Optional square plot width in domain units")
@@ -126,6 +135,7 @@ Examples:
                     comm=comm,
                     slice_specs=args.slice,
                     assume_structured_h5=True,
+                    backend_name=args.backend,
                 )
                 if rank == 0:
                     slice_outputs.extend(rendered)
