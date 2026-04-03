@@ -7,7 +7,7 @@ import os
 import h5py
 from mpi4py import MPI
 
-import convert_txt_to_hdf5 as converter
+from postprocess_lib import converter
 
 
 comm = MPI.COMM_WORLD
@@ -60,4 +60,3 @@ def ensure_structured_h5(path):
         return path
 
     raise ValueError(f"Unsupported extension '{ext}'. Expected .txt or .h5.")
-

@@ -3,9 +3,21 @@ Python Scripts Setup and Run Guide
 
 Scripts covered:
   main.py
-  ComputeSpectra.py
-  convert_txt_to_hdf5.py
-  visualize_velocity_yt.py
+  tools/ComputeSpectra.py
+  tools/convert_txt_to_hdf5.py
+  tools/visualize_velocity_yt.py
+
+Repo layout:
+  main.py
+    Primary driver for the integrated pipeline.
+  postprocess_lib/
+    Shared input-preparation and TXT <-> HDF5 conversion library code.
+  postprocess_fft/
+    Shared HeFFTe/MPI spectra code used by the driver and the standalone FFT tool.
+  postprocess_vis/
+    Shared slice-visualization code used by the driver.
+  tools/
+    Standalone verification scripts that exercise pieces of the library independently.
 
 Key workflow:
   1. Use main.py to accept TXT or HDF5 input.
@@ -13,7 +25,7 @@ Key workflow:
   3. Run the parallel spectra script on that HDF5 file.
   4. Optionally render one or more slices from the structured HDF5 file.
 
-Structured HDF5 schema written by convert_txt_to_hdf5_parallel.py:
+Structured HDF5 schema written by tools/convert_txt_to_hdf5.py:
   /grid/x
   /grid/y
   /grid/z
@@ -21,7 +33,7 @@ Structured HDF5 schema written by convert_txt_to_hdf5_parallel.py:
   /fields/vy
   /fields/vz
 
-This schema is what ComputeSpectra.py reads
+This schema is what tools/ComputeSpectra.py and main.py read
 directly in parallel.
 
 
@@ -84,9 +96,9 @@ Run:
 
   mpirun -n 4 python main.py your_data.txt
   mpirun -n 4 python main.py your_data.h5
-  mpirun -n 4 python ComputeSpectra.py your_data.h5 --backend heffte_fftw --no-plot
-  mpirun -n 4 python convert_txt_to_hdf5.py your_data.txt
-  mpirun -n 4 python visualize_velocity_yt.py your_data.h5 --slice z:center --field vx
+  mpirun -n 4 python tools/ComputeSpectra.py your_data.h5 --backend heffte_fftw --no-plot
+  mpirun -n 4 python tools/convert_txt_to_hdf5.py your_data.txt
+  mpirun -n 4 python tools/visualize_velocity_yt.py your_data.h5 --slice z:center --field vx
 
 Integrated pipeline:
 
@@ -101,10 +113,16 @@ What main.py now does:
 Files written by the integrated pipeline:
   - the structured .h5 is written next to the original .txt input
   - the FFT spectra .txt and spectra metadata .txt are written next to that .h5 file
-  - the yt PNG is also written next to that .h5 file unless --slice-output is used
+  - the slice PNGs are written under slice_plots/ next to that .h5 file
+
+Default slice outputs from main.py:
+  - xy_center_velocity_magnitude
+  - xy_face_velocity_magnitude
+  - yz_face_velocity_magnitude
+  - zx_face_velocity_magnitude
 
 Important:
-  convert_txt_to_hdf5.py deletes the original .txt after a successful TXT -> HDF5
+  tools/convert_txt_to_hdf5.py deletes the original .txt after a successful TXT -> HDF5
   conversion. Keep a copy if you want to preserve the ASCII file.
 
 
@@ -122,13 +140,13 @@ slice workflow does not rebuild the full 3D volume in yt.  Instead it:
 
 This is much more scalable for large runs and for requesting several slices.
 
-The visualization entrypoint accepts either:
+The standalone visualization entrypoint accepts either:
 
   1. SampledData TXT input
-  2. Structured HDF5 written by convert_txt_to_hdf5.py
+  2. Structured HDF5 written by tools/convert_txt_to_hdf5.py
 
 How it works:
-  visualize_velocity_yt.py detects the input type from the file extension.
+  tools/visualize_velocity_yt.py detects the input type from the file extension.
   For .txt files it first runs the same TXT -> HDF5 conversion used by
   main.py, including the same verification prints and automatic deletion of
   the original TXT after a successful conversion.
@@ -138,13 +156,13 @@ How it works:
 
 Examples:
 
-  python visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vx
-  mpirun -n 4 python visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vx
-  mpirun -n 4 python visualize_velocity_yt.py data/SampledData0.txt --slice z:center --field vx
+  python tools/visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vx
+  mpirun -n 4 python tools/visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vx
+  mpirun -n 4 python tools/visualize_velocity_yt.py data/SampledData0.txt --slice z:center --field vx
 
 Multiple slices in one run:
 
-  mpirun -n 4 python visualize_velocity_yt.py data/SampledData0.h5 \
+  mpirun -n 4 python tools/visualize_velocity_yt.py data/SampledData0.h5 \
     --slice z:center \
     --slice x:center \
     --slice y:frac=0.25 \
@@ -158,11 +176,11 @@ Supported slice selectors:
 
 Optional interactive plotting:
 
-  python visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vx --plot
+  python tools/visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vx --plot
 
 Output:
 
-  data/SampledData0_slice_z_center_velocity_x.png
+  data/slice_plots/SampledData0_xy_center_velocity_magnitude.png
 
 Notes:
   - --plot only displays from rank 0.
@@ -215,10 +233,10 @@ Verify:
 
 Run:
 
-  mpirun -n 4 python ComputeSpectra.py \
+  mpirun -n 4 python tools/ComputeSpectra.py \
     your_data.h5 --backend heffte_fftw --no-plot
 
-  mpirun -n 4 python convert_txt_to_hdf5.py your_data.txt
+  mpirun -n 4 python tools/convert_txt_to_hdf5.py your_data.txt
 
 
 ================================================================================
@@ -441,7 +459,7 @@ Observed result:
 
   python -c "import h5py, heffte; print('h5py mpi =', h5py.get_config().mpi); print('HeFFTe =', heffte.__version__)"
 
-  srun -l -n 224 python ~/Documents/mfem_build/mfem/miniapps/fluids/navier/python_scripts/ComputeSpectra.py \
+  srun -l -n 224 python ~/Documents/mfem_build/mfem/miniapps/fluids/navier/python_scripts/tools/ComputeSpectra.py \
     your_data.h5 --backend heffte_fftw --no-plot
 
 
@@ -449,13 +467,13 @@ Observed result:
 NOTES
 ================================================================================
 
-convert_txt_to_hdf5.py
+tools/convert_txt_to_hdf5.py
   - Reads the TXT file in parallel after rank 0 builds the chunk index.
   - Writes structured FFT-ready HDF5.
   - Verifies TKE and row counts after writing.
   - H5 -> TXT conversion remains serial on rank 0.
 
-ComputeSpectra.py
+tools/ComputeSpectra.py
   - For the structured HDF5 schema above, each rank reads its local HDF5 slab directly.
   - FFTs and spectral decomposition are distributed through HeFFTe/MPI.
   - Legacy flat HDF5/TXT still uses rank 0 reconstruction plus scatter.

@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from convert_txt_to_hdf5 import is_structured_velocity_hdf5
+from postprocess_lib.converter import is_structured_velocity_hdf5
 
 from .layout import box_slices
 
