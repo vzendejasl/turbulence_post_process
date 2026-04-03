@@ -19,7 +19,7 @@ if not MPI.Is_initialized():
 from postprocess_fft.app import analyze_file_parallel
 from postprocess_fft.io import plot_spectra
 from postprocess_lib import converter
-from postprocess_lib.prepare import ensure_structured_h5
+from postprocess_lib.prepare import ensure_structured_h5, resolve_existing_path
 from postprocess_vis.app import run_visualization
 
 
@@ -129,7 +129,11 @@ Examples:
                 prepared.append(prepared_path)
 
             if args.scalar_file:
-                added_scalar_fields = converter.append_scalar_fields_to_h5(args.scalar_file, prepared_path)
+                scalar_paths = [
+                    resolve_existing_path(scalar_path, preferred_extensions=(".txt",))
+                    for scalar_path in args.scalar_file
+                ]
+                added_scalar_fields = converter.append_scalar_fields_to_h5(scalar_paths, prepared_path)
                 if rank == 0 and added_scalar_fields:
                     print("Added scalar field datasets:")
                     for field_name in added_scalar_fields:

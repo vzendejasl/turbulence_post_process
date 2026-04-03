@@ -436,14 +436,21 @@ That mismatch was the reason for:
 
 Use the same stack for build and run:
 
-  module purge
+  module --force purge
+  module load StdEnv
   module load craype-x86-trento
-  module load gcc/13.3.1-magic
-  module load cray-mpich/9.1.0
-  module load cray-hdf5-parallel
+  module load gcc/13.3.1
+  module load cray-hdf5-parallel/1.14.3.7
   module load cray-fftw/3.3.10.11
   module load rocm/6.4.0
   module load cmake/3.29.2
+
+Current Tuolumne note:
+  The validated runtime stack on our recent Tuolumne tests used `StdEnv` plus
+  `gcc/13.3.1` and did not require an explicit `cray-mpich` module load.
+  `cray-mpich/9.1.0` is only available behind the `*-magic` compiler stack on
+  some systems, so do not hard-code it unless your allocation actually supports
+  that stack.
 
 
 --------------------------------------------------------------------------------
@@ -466,7 +473,7 @@ Expected:
 4. Build MPI-enabled h5py against GNU parallel HDF5
 --------------------------------------------------------------------------------
 
-Use the GNU HDF5 variant, not the Cray one:
+Use the GNU HDF5 variant under the Cray parallel HDF5 install:
 
   export HDF5_MPI=ON
   export HDF5_DIR=/opt/cray/pe/hdf5-parallel/1.14.3.7/gnu/12.2
@@ -565,11 +572,11 @@ Observed result:
   #SBATCH --ntasks-per-node 36
   #SBATCH -t 02:00:00
 
-  module purge
+  module --force purge
+  module load StdEnv
   module load craype-x86-trento
-  module load gcc/13.3.1-magic
-  module load cray-mpich/9.1.0
-  module load cray-hdf5-parallel
+  module load gcc/13.3.1
+  module load cray-hdf5-parallel/1.14.3.7
   module load cray-fftw/3.3.10.11
   module load rocm/6.4.0
   module load cmake/3.29.2
@@ -599,11 +606,11 @@ Observed result:
   #SBATCH --ntasks-per-node 112
   #SBATCH -t 02:00:00
 
-  module purge
+  module --force purge
+  module load StdEnv
   module load craype-x86-trento
-  module load gcc/13.3.1-magic
-  module load cray-mpich/9.1.0
-  module load cray-hdf5-parallel
+  module load gcc/13.3.1
+  module load cray-hdf5-parallel/1.14.3.7
   module load cray-fftw/3.3.10.11
   module load rocm/6.4.0
   module load cmake/3.29.2

@@ -19,6 +19,39 @@ def _broadcast_exists(path):
     return comm.bcast(exists, root=0)
 
 
+def resolve_existing_path(path, preferred_extensions=(".h5", ".txt")):
+    """
+    Return an existing path, retrying with alternate extensions when needed.
+
+    This is mainly a guard rail for users who pass `foo.txt` when `foo.h5`
+    exists, or vice versa. If `path` has no extension, the preferred extension
+    order is tried.
+    """
+    if _broadcast_exists(path):
+        return path
+
+    base, ext = os.path.splitext(path)
+    ext = ext.lower()
+    candidates = []
+
+    if ext:
+        for candidate_ext in preferred_extensions:
+            if candidate_ext != ext:
+                candidates.append(base + candidate_ext)
+    else:
+        for candidate_ext in preferred_extensions:
+            candidates.append(path + candidate_ext)
+
+    for candidate in candidates:
+        if _broadcast_exists(candidate):
+            if rank == 0:
+                print(f"  Requested path not found: {path}")
+                print(f"  Retrying with alternate extension: {candidate}")
+            return candidate
+
+    return path
+
+
 def validate_structured_h5(path):
     """Validate that an HDF5 file matches the FFT-ready structured schema."""
     with h5py.File(path, "r") as hf:
@@ -32,6 +65,7 @@ def ensure_structured_h5(path):
     TXT input uses the existing parallel converter workflow, preserving its
     print statements, verification, and automatic source-file deletion.
     """
+    path = resolve_existing_path(path, preferred_extensions=(".h5", ".txt"))
     ext = os.path.splitext(path)[1].lower()
     if ext == ".txt":
         success = converter.convert_file(path)
