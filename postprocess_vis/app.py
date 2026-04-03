@@ -398,6 +398,17 @@ def output_name(data_file, field_label, axis, slice_tag, output_format):
     return os.path.join(output_dir, f"{base}_{PLANE_NAMES[axis]}_{slice_tag}_{field_label}.{output_format}")
 
 
+def output_source_path(data_file, dataset_name, field_family):
+    """Return the path whose stem should drive default output naming for one field."""
+    if field_family != "scalar":
+        return data_file
+
+    with h5py.File(data_file, "r") as hf:
+        source_txt = hf["fields"][dataset_name].attrs.get("source_txt")
+
+    return str(source_txt) if source_txt else data_file
+
+
 def apply_width(ax, meta, axis, width):
     """Zoom the plot around the plane center when width is provided."""
     if width is None:
@@ -635,7 +646,13 @@ def run_visualization(
                     f"  Slice normal={axis_name}, index={plane_index}, "
                     f"coord={coord_value:.6g}, step={meta['step']}, time={meta['time']:.6g}"
                 )
-                rendered = output or output_name(prepared_path, field_label, axis_name, slice_tag, output_format)
+                rendered = output or output_name(
+                    output_source_path(prepared_path, dataset_name, field_family),
+                    field_label,
+                    axis_name,
+                    slice_tag,
+                    output_format,
+                )
                 render_plane_image(
                     plane,
                     meta,

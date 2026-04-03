@@ -106,6 +106,42 @@ Integrated pipeline:
 
   mpirun -n 4 python main.py your_data.txt
 
+Main.py command patterns:
+
+  Basic structured-HDF5 input:
+    mpirun -n 4 python main.py your_velocity_data.h5
+
+  Basic TXT input:
+    mpirun -n 4 python main.py your_velocity_data.txt
+
+  FFT only:
+    mpirun -n 4 python main.py your_velocity_data.h5 --skip-slice
+
+  Slice rendering only:
+    mpirun -n 4 python main.py your_velocity_data.h5 --skip-fft
+
+  Save PNG slices instead of PDF:
+    mpirun -n 4 python main.py your_velocity_data.h5 --slice-format png
+
+  Change slice DPI and figure size:
+    mpirun -n 4 python main.py your_velocity_data.h5 --slice-dpi 600 --slice-figsize 10
+
+  Render only selected fields:
+    mpirun -n 4 python main.py your_velocity_data.h5 \
+      --slice-field velocity_magnitude \
+      --slice-field vorticity_magnitude
+
+  Append scalar fields before slicing:
+    mpirun -n 4 python main.py your_velocity_data.h5 \
+      --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt \
+      --scalar-file pressure_sampled_data_uniform_interpolated_cycle_0.txt
+
+  Append scalars and render only selected outputs:
+    mpirun -n 4 python main.py your_velocity_data.h5 \
+      --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt \
+      --slice-field velocity_magnitude \
+      --slice-field density
+
 What main.py now does:
   1. Accepts .txt or .h5 input.
   2. Converts TXT to structured FFT-ready HDF5 when needed.
@@ -195,6 +231,38 @@ Examples:
   python tools/visualize_velocity_yt.py data/SampledData0.h5
   mpirun -n 4 python tools/visualize_velocity_yt.py data/SampledData0.h5
   mpirun -n 4 python tools/visualize_velocity_yt.py data/SampledData0.txt
+
+Slice-postprocessing command patterns:
+
+  Default slice set from a structured HDF5 file:
+    mpirun -n 4 python tools/visualize_velocity_yt.py your_velocity_data.h5
+
+  Default slice set from a TXT file:
+    mpirun -n 4 python tools/visualize_velocity_yt.py your_velocity_data.txt
+
+  One field only:
+    mpirun -n 4 python tools/visualize_velocity_yt.py your_velocity_data.h5 --field vx
+
+  One custom slice:
+    mpirun -n 4 python tools/visualize_velocity_yt.py your_velocity_data.h5 --slice z:center
+
+  Several custom slices:
+    mpirun -n 4 python tools/visualize_velocity_yt.py your_velocity_data.h5 \
+      --slice z:center \
+      --slice x:center \
+      --slice y:frac=0.25
+
+  Save PNG output:
+    mpirun -n 4 python tools/visualize_velocity_yt.py your_velocity_data.h5 --format png
+
+  Increase raster resolution:
+    mpirun -n 4 python tools/visualize_velocity_yt.py your_velocity_data.h5 --format png --dpi 600 --figsize 10
+
+  Save only one selected slice to a specific path:
+    mpirun -n 4 python tools/visualize_velocity_yt.py your_velocity_data.h5 \
+      --slice z:center \
+      --field velocity_magnitude \
+      --output my_slice.pdf
 
 Multiple slices in one run:
 
