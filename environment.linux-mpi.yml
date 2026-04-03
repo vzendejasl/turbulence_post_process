@@ -1,0 +1,25 @@
+name: heffte-py-linux
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip
+  - cmake
+  - make
+  - ninja
+  - cxx-compiler
+  - pkg-config
+  - git
+  - "fftw=3.3.10=mpi_mpich_*"
+  - mpich=4.3.2
+  - mpi4py=4.1.*
+  - "hdf5=1.14.6=mpi_mpich_*"
+  - "h5py=3.15.*=mpi_mpich_*"
+  - libfabric
+  - ucx
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - yt
+  - cython
