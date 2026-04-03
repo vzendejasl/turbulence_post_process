@@ -348,15 +348,29 @@ def compute_local_vorticity_fields(filepath, meta, comm, backend_name):
     }
 
 
+def output_stem(source_path, field_label):
+    """Build a clean default filename stem with the plotted field name once in front."""
+    base = os.path.splitext(os.path.basename(source_path))[0]
+    marker = "_sampled_data"
+    if marker in base:
+        _, suffix = base.split(marker, 1)
+        return f"{field_label}{marker}{suffix}"
+    if base == field_label or base.startswith(f"{field_label}_"):
+        return base
+    if base.endswith(f"_{field_label}"):
+        return base[: -(len(field_label) + 1)]
+    return f"{field_label}_{base}"
+
+
 def output_name(data_file, field_label, axis, slice_tag, output_format):
     """Return the default output name for one slice image."""
     directory = os.path.dirname(os.path.abspath(data_file))
     output_dir = os.path.join(directory, "slice_plots")
     os.makedirs(output_dir, exist_ok=True)
-    base = os.path.splitext(os.path.basename(data_file))[0]
+    base = output_stem(data_file, field_label)
     if slice_tag in {"xy_center", "xy_face", "yz_face", "zx_face"}:
-        return os.path.join(output_dir, f"{base}_{slice_tag}_{field_label}.{output_format}")
-    return os.path.join(output_dir, f"{base}_{PLANE_NAMES[axis]}_{slice_tag}_{field_label}.{output_format}")
+        return os.path.join(output_dir, f"{base}_{slice_tag}.{output_format}")
+    return os.path.join(output_dir, f"{base}_{PLANE_NAMES[axis]}_{slice_tag}.{output_format}")
 
 
 def output_source_path(data_file, dataset_name, field_family):
@@ -365,9 +379,15 @@ def output_source_path(data_file, dataset_name, field_family):
         return data_file
 
     with h5py.File(data_file, "r") as hf:
-        source_txt = hf["fields"][dataset_name].attrs.get("source_txt")
+        dataset = hf["fields"][dataset_name]
+        source_path = dataset.attrs.get("source_path")
+        source_h5 = dataset.attrs.get("source_h5")
+        source_txt = dataset.attrs.get("source_txt")
 
-    return str(source_txt) if source_txt else data_file
+    for candidate in (source_path, source_h5, source_txt):
+        if candidate:
+            return str(candidate)
+    return data_file
 
 
 def axis_bounds(coords):
