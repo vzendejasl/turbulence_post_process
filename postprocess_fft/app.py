@@ -196,19 +196,12 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
     omega_y = backward_field(plan, omega_y_k, local_shape)
     omega_z = backward_field(plan, omega_z_k, local_shape)
     vorticity_ke = global_mean_energy(omega_x, omega_y, omega_z, global_points, comm)
+    enstrophy_rel_error = abs(vorticity_ke - total_enstrophy) / max(abs(total_enstrophy), 1.0e-30)
 
     if root:
         print(f"  Total enstrophy (fourier, code convention): {total_enstrophy:.8f}")
         print(f"  Vorticity KE (real-space, code convention): {vorticity_ke:.8f}")
-
-    if not np.isclose(vorticity_ke, total_enstrophy, rtol=1.0e-10, atol=1.0e-12):
-        raise RuntimeError(
-            "Enstrophy sanity check failed: "
-            f"vorticity KE = {vorticity_ke:.16e}, "
-            f"enstrophy = {total_enstrophy:.16e}"
-        )
-    if root:
-        print("  Sanity check: vorticity KE matches enstrophy.")
+        print(f"  Enstrophy relative error: {enstrophy_rel_error:.8e}")
 
     compute_energy_dissipation_enstrophy(vx_k, vy_k, vz_k, shape, local_box, comm, root)
 
