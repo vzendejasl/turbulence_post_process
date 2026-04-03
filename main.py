@@ -18,6 +18,7 @@ if not MPI.Is_initialized():
 
 from postprocess_fft.app import analyze_file_parallel
 from postprocess_fft.io import plot_spectra
+from postprocess_lib import converter
 from postprocess_lib.prepare import ensure_structured_h5
 from postprocess_vis.app import run_visualization
 
@@ -52,22 +53,19 @@ Examples:
     )
     parser.add_argument(
         "--slice-field",
-        default=None,
-        choices=[
-            "velocity_magnitude",
-            "vx",
-            "vy",
-            "vz",
-            "vorticity_magnitude",
-            "wx",
-            "wy",
-            "wz",
-        ],
-        help="Field for slice plots. If omitted, render both velocity and vorticity magnitudes.",
+        action="append",
+        default=[],
+        help="Field for slice plots. Repeat to render multiple fields. If omitted, render velocity, vorticity, and any appended scalar fields.",
+    )
+    parser.add_argument(
+        "--scalar-file",
+        action="append",
+        default=[],
+        help="Optional sampled-data scalar TXT file to append into the structured HDF5 before slicing. Repeat for multiple scalar fields.",
     )
     parser.add_argument("--slice-cmap", default="RdBu_r", help="Colormap for slice plots")
     parser.add_argument("--slice-width", type=float, default=None, help="Optional square plot width in domain units")
-    parser.add_argument("--slice-dpi", type=int, default=300, help="Slice image save DPI. Default is 300.")
+    parser.add_argument("--slice-dpi", type=int, default=600, help="Slice image save DPI. Default is 600.")
     parser.add_argument(
         "--slice-figsize",
         type=float,
@@ -85,6 +83,12 @@ Examples:
         default=None,
         help="Optional output path for a single slice from a single input file.",
     )
+    parser.add_argument("--no-slice-data", action="store_true", help="Skip writing the combined *_slices.h5 file.")
+    parser.add_argument(
+        "--slice-data-output",
+        default=None,
+        help="Optional output path for the combined slice-data HDF5 file for a single input file.",
+    )
     parser.add_argument("--slice-plot", action="store_true", help="Also display slice plots on rank 0")
     args = parser.parse_args()
 
@@ -96,6 +100,7 @@ Examples:
     prepared = []
     fft_results = []
     slice_outputs = []
+    slice_data_outputs = []
 
     if rank == 0:
         print()
@@ -106,6 +111,10 @@ Examples:
 
     if args.slice_output and len(args.data_files) != 1:
         raise SystemExit("--slice-output can only be used with a single input file.")
+    if args.slice_data_output and len(args.data_files) != 1:
+        raise SystemExit("--slice-data-output can only be used with a single input file.")
+    if args.scalar_file and len(args.data_files) != 1:
+        raise SystemExit("--scalar-file currently requires a single primary input file.")
 
     for idx, path in enumerate(args.data_files):
         try:
@@ -118,6 +127,13 @@ Examples:
             prepared_path = ensure_structured_h5(path)
             if rank == 0:
                 prepared.append(prepared_path)
+
+            if args.scalar_file:
+                added_scalar_fields = converter.append_scalar_fields_to_h5(args.scalar_file, prepared_path)
+                if rank == 0 and added_scalar_fields:
+                    print("Added scalar field datasets:")
+                    for field_name in added_scalar_fields:
+                        print(f"  {field_name}")
 
             if not args.skip_fft:
                 if rank == 0:
@@ -141,10 +157,10 @@ Examples:
                 if rank == 0:
                     print()
                 slice_output = args.slice_output if idx == 0 else None
-                rendered = run_visualization(
+                rendered, slice_data_path = run_visualization(
                     prepared_path,
                     axis=args.slice_axis,
-                    field_name=args.slice_field,
+                    field_names=args.slice_field,
                     cmap=args.slice_cmap,
                     width=args.slice_width,
                     output=slice_output,
@@ -156,9 +172,13 @@ Examples:
                     output_format=args.slice_format,
                     save_dpi=args.slice_dpi,
                     figure_size=args.slice_figsize,
+                    save_slice_data=not args.no_slice_data,
+                    slice_data_output=args.slice_data_output if idx == 0 else None,
                 )
                 if rank == 0:
                     slice_outputs.extend(rendered)
+                    if slice_data_path is not None:
+                        slice_data_outputs.append(slice_data_path)
         except Exception as exc:
             if rank == 0:
                 print(f"  CRITICAL ERROR processing {path}: {exc}")
@@ -180,6 +200,10 @@ Examples:
             if slice_outputs:
                 print("Slice plot outputs:")
                 for path in slice_outputs:
+                    print(f"  {path}")
+            if slice_data_outputs:
+                print("Slice data outputs:")
+                for path in slice_data_outputs:
                     print(f"  {path}")
         else:
             print(f"Pipeline completed with ERRORS. {failures}/{len(args.data_files)} file(s) failed.")

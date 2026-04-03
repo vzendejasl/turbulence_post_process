@@ -6,6 +6,7 @@ Scripts covered:
   tools/ComputeSpectra.py
   tools/convert_txt_to_hdf5.py
   tools/visualize_velocity_yt.py
+  tools/replot_slice_data.py
 
 Repo layout:
   main.py
@@ -24,6 +25,7 @@ Key workflow:
   2. Convert MFEM TXT output to structured FFT-ready HDF5 when needed.
   3. Run the parallel spectra script on that HDF5 file.
   4. Optionally render one or more slices from the structured HDF5 file.
+  5. Save the raw 2D slice data to one combined *_slices.h5 file for later replotting.
 
 Structured HDF5 schema written by tools/convert_txt_to_hdf5.py:
   /grid/x
@@ -107,13 +109,16 @@ Integrated pipeline:
 What main.py now does:
   1. Accepts .txt or .h5 input.
   2. Converts TXT to structured FFT-ready HDF5 when needed.
-  3. Runs the FFT/spectra workflow on the resulting HDF5.
-  4. Writes one or more slice PNGs after the FFT step.
+  3. Optionally appends one or more scalar sampled-data TXT files into /fields/<scalar_name>
+     of the structured HDF5.
+  4. Runs the FFT/spectra workflow on the resulting HDF5.
+  5. Writes one or more slice PDFs after the FFT step.
 
 Files written by the integrated pipeline:
   - the structured .h5 is written next to the original .txt input
   - the FFT spectra .txt and spectra metadata .txt are written next to that .h5 file
   - the slice plots are written under slice_plots/ next to that .h5 file
+  - the raw slice data are written under slice_data/ as one combined <base>_slices.h5 file
 
 Default slice outputs from main.py:
   - xy_center_velocity_magnitude.pdf
@@ -124,10 +129,11 @@ Default slice outputs from main.py:
   - xy_face_vorticity_magnitude.pdf
   - yz_face_vorticity_magnitude.pdf
   - zx_face_vorticity_magnitude.pdf
+  - one combined slice_data/<base>_slices.h5 file containing all saved slice arrays
 
 Slice output defaults:
   - format: pdf
-  - save dpi: 300
+  - save dpi: 600
   - square figure size: 8.0 inches
 
 Canonical slice field names:
@@ -135,6 +141,21 @@ Canonical slice field names:
   - vorticity_magnitude
   - vx, vy, vz
   - wx, wy, wz
+
+The combined slice HDF5 stores:
+  - all saved 2D slice arrays
+  - horizontal and vertical coordinates for each slice
+  - axis, plane index, plane coordinate, step, time, and source-file metadata
+
+This lets you replot slices later without recomputing the FFT/vorticity workflow.
+
+Optional scalar field inputs:
+  - pass one or more sampled-data scalar TXT files to main.py with:
+      --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt
+      --scalar-file pressure_sampled_data_uniform_interpolated_cycle_0.txt
+  - the scalar dataset names are parsed from the "Sampled Data, <name>" header line
+  - each scalar is appended to /fields/<scalar_name> in the structured HDF5
+  - the same default slices are then written for velocity, vorticity, and all appended scalars
 
 Important:
   tools/convert_txt_to_hdf5.py deletes the original .txt after a successful TXT -> HDF5
@@ -199,6 +220,9 @@ Useful controls:
       --slice-format {pdf,png}
       --slice-dpi 600
       --slice-figsize 10
+      --scalar-file path/to/scalar_sampled_data.txt
+      --slice-field velocity_magnitude
+      --slice-field density
   - tools/visualize_velocity_yt.py:
       --format {pdf,png}
       --dpi 600
@@ -208,11 +232,52 @@ Output:
 
   data/slice_plots/SampledData0_xy_center_velocity_magnitude.pdf
   data/slice_plots/SampledData0_xy_center_vorticity_magnitude.pdf
+  data/slice_data/SampledData0_slices.h5
 
 Notes:
   - --plot only displays from rank 0.
   - On headless Linux sessions, --plot may not open a visible window even though
     the PNG is still written successfully.
+
+
+--------------------------------------------------------------------------------
+Replot saved slice data
+--------------------------------------------------------------------------------
+
+The slice workflow now also writes one combined HDF5 file:
+
+  data/slice_data/SampledData0_slices.h5
+
+Use the standalone reader/replot tool to inspect what is available:
+
+  python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --list
+
+Example replot:
+
+  python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 \
+    --field velocity_magnitude \
+    --slice xy_center \
+    --cmap viridis
+
+Example scalar workflow:
+
+  mpirun -n 4 python main.py velocity_sampled_data_uniform_interpolated_cycle_0.txt \
+    --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt \
+    --scalar-file pressure_sampled_data_uniform_interpolated_cycle_0.txt
+
+Useful controls:
+  - --vmin <value>
+  - --vmax <value>
+  - --width <domain width>
+  - --output <path>
+  - --format {png,pdf}
+
+Optional yt adapter summary:
+
+  python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 \
+    --field velocity_magnitude \
+    --slice xy_center \
+    --yt-info
 
 
 ================================================================================

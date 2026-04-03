@@ -82,6 +82,29 @@ def parse_header_metadata(header_lines):
     return step_number, time_value
 
 
+def sanitize_field_name(name):
+    """Return a dataset-safe field name derived from a sampled-data label."""
+    field_name = re.sub(r"[^0-9A-Za-z_]+", "_", str(name).strip().lower())
+    field_name = re.sub(r"_+", "_", field_name).strip("_")
+    if not field_name:
+        raise ValueError("Unable to derive a valid field name from the sampled-data header.")
+    if field_name[0].isdigit():
+        field_name = f"field_{field_name}"
+    return field_name
+
+
+def parse_sampled_data_field_name(header_lines, fallback_name):
+    """Extract the sampled quantity name from the preserved text header."""
+    for line in header_lines:
+        match = re.search(r"Sampled Data\s*,\s*(.+?)\s*$", line)
+        if match:
+            display_name = match.group(1).strip()
+            return sanitize_field_name(display_name), display_name
+
+    display_name = str(fallback_name).strip()
+    return sanitize_field_name(display_name), display_name
+
+
 def merge_local_uniques(local_values):
     """Gather rank-local coordinate sets and merge them on rank 0."""
     gathered = comm.gather(np.asarray(local_values, dtype=np.float64), root=0)
@@ -202,6 +225,125 @@ def discover_grid_from_chunks(txt_path, chunk_index):
     dy = validate_uniform_axis(y_unique, "y")
     dz = validate_uniform_axis(z_unique, "z")
     return x_unique, y_unique, z_unique, dx, dy, dz
+
+
+def read_structured_grid(path):
+    """Read the structured HDF5 grid coordinates on rank 0 and broadcast them."""
+    x_unique = y_unique = z_unique = None
+    if rank == 0:
+        with h5py.File(path, "r") as hf:
+            if not is_structured_velocity_hdf5(hf):
+                raise ValueError(f"{path} is not a structured FFT-ready velocity HDF5 file.")
+            x_unique = np.asarray(hf["grid"]["x"][:], dtype=np.float64)
+            y_unique = np.asarray(hf["grid"]["y"][:], dtype=np.float64)
+            z_unique = np.asarray(hf["grid"]["z"][:], dtype=np.float64)
+    x_unique = comm.bcast(x_unique, root=0)
+    y_unique = comm.bcast(y_unique, root=0)
+    z_unique = comm.bcast(z_unique, root=0)
+    return x_unique, y_unique, z_unique
+
+
+def validate_matching_structured_grid(txt_path, h5_path, txt_grid, h5_grid):
+    """Ensure an auxiliary sampled-data TXT file matches the structured HDF5 grid."""
+    txt_x, txt_y, txt_z = txt_grid
+    h5_x, h5_y, h5_z = h5_grid
+
+    for axis_name, txt_axis, h5_axis in (
+        ("x", txt_x, h5_x),
+        ("y", txt_y, h5_y),
+        ("z", txt_z, h5_z),
+    ):
+        if len(txt_axis) != len(h5_axis) or not np.allclose(txt_axis, h5_axis, rtol=0.0, atol=1.0e-10):
+            raise ValueError(
+                f"Scalar field grid from {txt_path} does not match {h5_path} along axis '{axis_name}'."
+            )
+
+
+def redistribute_scalar_to_xslabs(txt_path, chunk_index, x_unique, y_unique, z_unique, dx, dy, dz):
+    """Read a scalar sampled-data TXT file in parallel and redistribute by x-slab."""
+    nx, ny, nz = len(x_unique), len(y_unique), len(z_unique)
+    x_ranges = split_axis(nx, size)
+    x_stops = np.array([stop for _, stop in x_ranges], dtype=np.int64)
+
+    send_bins = [[] for _ in range(size)]
+    local_rows = 0
+
+    for ci in range(rank, len(chunk_index), size):
+        byte_off, nrows = chunk_index[ci]
+        chunk_data = read_chunk_at_offset(txt_path, byte_off, nrows)
+        if chunk_data.shape[1] < 4:
+            raise ValueError(f"Expected at least 4 columns in scalar sampled-data file {txt_path}.")
+
+        x_vals = np.round(chunk_data[:, 0], 10)
+        y_vals = np.round(chunk_data[:, 1], 10)
+        z_vals = np.round(chunk_data[:, 2], 10)
+        scalar_values = chunk_data[:, 3]
+
+        ix = compute_axis_indices(x_vals, x_unique, dx, "x")
+        iy = compute_axis_indices(y_vals, y_unique, dy, "y")
+        iz = compute_axis_indices(z_vals, z_unique, dz, "z")
+
+        dest_ranks = np.searchsorted(x_stops, ix, side="right")
+        for dest_rank in np.unique(dest_ranks):
+            mask = dest_ranks == dest_rank
+            packed = np.column_stack(
+                (
+                    ix[mask].astype(np.float64),
+                    iy[mask].astype(np.float64),
+                    iz[mask].astype(np.float64),
+                    scalar_values[mask],
+                )
+            )
+            send_bins[int(dest_rank)].append(packed)
+
+        local_rows += len(chunk_data)
+
+    send_arrays = []
+    for bins in send_bins:
+        if bins:
+            send_arrays.append(np.ascontiguousarray(np.vstack(bins), dtype=np.float64))
+        else:
+            send_arrays.append(np.empty((0, 4), dtype=np.float64))
+
+    send_counts = np.array([arr.size for arr in send_arrays], dtype=np.int32)
+    recv_counts = np.empty(size, dtype=np.int32)
+    comm.Alltoall(send_counts, recv_counts)
+
+    send_displs = np.zeros(size, dtype=np.int32)
+    recv_displs = np.zeros(size, dtype=np.int32)
+    if size > 1:
+        send_displs[1:] = np.cumsum(send_counts[:-1], dtype=np.int32)
+        recv_displs[1:] = np.cumsum(recv_counts[:-1], dtype=np.int32)
+
+    sendbuf = (
+        np.concatenate([arr.ravel(order="C") for arr in send_arrays])
+        if np.any(send_counts)
+        else np.empty(0, dtype=np.float64)
+    )
+    recvbuf = np.empty(int(np.sum(recv_counts)), dtype=np.float64)
+
+    comm.Alltoallv(
+        [sendbuf, send_counts, send_displs, MPI.DOUBLE],
+        [recvbuf, recv_counts, recv_displs, MPI.DOUBLE],
+    )
+
+    x_start, x_stop = x_ranges[rank]
+    local_nx = x_stop - x_start
+    local_scalar = np.zeros((local_nx, ny, nz), dtype=np.float64)
+    filled = np.zeros((local_nx, ny, nz), dtype=bool)
+
+    if recvbuf.size:
+        received = recvbuf.reshape((-1, 4), order="C")
+        li = received[:, 0].astype(np.int64) - x_start
+        lj = received[:, 1].astype(np.int64)
+        lk = received[:, 2].astype(np.int64)
+        local_scalar[li, lj, lk] = received[:, 3]
+        filled[li, lj, lk] = True
+
+    if filled.size and np.count_nonzero(filled) != filled.size:
+        raise ValueError(f"Rank {rank} did not receive a complete x-slab during scalar redistribution.")
+
+    return (x_start, x_stop), local_scalar, local_rows
 
 
 def redistribute_to_xslabs(txt_path, chunk_index, x_unique, y_unique, z_unique, dx, dy, dz):
@@ -382,6 +524,51 @@ def write_structured_h5(
             hf.attrs["time"] = float(time_value)
 
 
+def write_scalar_field_to_h5(
+    h5_path,
+    field_name,
+    display_name,
+    local_x_bounds,
+    local_scalar,
+    source_txt_path,
+):
+    """Append one scalar field dataset to an existing structured HDF5 file."""
+    x_unique, y_unique, z_unique = read_structured_grid(h5_path)
+    global_shape = (len(x_unique), len(y_unique), len(z_unique))
+    x_start, x_stop = local_x_bounds
+
+    if rank == 0:
+        with h5py.File(h5_path, "a") as hf:
+            fields = hf["fields"]
+            if field_name in fields:
+                del fields[field_name]
+    comm.Barrier()
+
+    if h5py.get_config().mpi:
+        with h5py.File(h5_path, "r+", driver="mpio", comm=comm) as hf:
+            dataset = hf["fields"].create_dataset(field_name, shape=global_shape, dtype="float64")
+            if x_stop > x_start:
+                dataset[slice(x_start, x_stop), :, :] = local_scalar
+    else:
+        gathered = comm.gather((x_start, x_stop, local_scalar), root=0)
+        if rank == 0:
+            with h5py.File(h5_path, "a") as hf:
+                dataset = hf["fields"].create_dataset(field_name, shape=global_shape, dtype="float64")
+                for slab_start, slab_stop, slab_values in gathered:
+                    if slab_stop > slab_start:
+                        dataset[slice(slab_start, slab_stop), :, :] = slab_values
+
+    comm.Barrier()
+
+    if rank == 0:
+        with h5py.File(h5_path, "a") as hf:
+            dataset = hf["fields"][field_name]
+            dataset.attrs["field_kind"] = "scalar"
+            dataset.attrs["display_name"] = display_name
+            dataset.attrs["plot_label"] = display_name
+            dataset.attrs["source_txt"] = os.path.abspath(source_txt_path)
+
+
 def convert_txt_to_h5_parallel(txt_path, h5_path):
     """Convert one TXT file to structured HDF5 in parallel."""
     header_lines = chunk_index = None
@@ -447,6 +634,109 @@ def convert_txt_to_h5_parallel(txt_path, h5_path):
     tke = comm.bcast(tke, root=0)
 
     return tke, total_rows
+
+
+def append_scalar_txt_to_h5_parallel(txt_path, h5_path):
+    """Append one scalar sampled-data TXT file into an existing structured HDF5 file."""
+    exists = comm.bcast(os.path.exists(txt_path) if rank == 0 else False, root=0)
+    if not exists:
+        raise FileNotFoundError(txt_path)
+
+    if rank == 0:
+        print(f"\nAdding scalar field: {txt_path}")
+        header_lines, skip_count = get_txt_header(txt_path)
+        if header_lines is not None:
+            print("  Building scalar chunk index (rank 0 scans file once)...")
+            chunk_index = build_chunk_index(txt_path, skip_count)
+            total_rows = sum(n for _, n in chunk_index)
+            field_name, display_name = parse_sampled_data_field_name(
+                header_lines,
+                os.path.splitext(os.path.basename(txt_path))[0],
+            )
+            print(f"  Parsed scalar name: {display_name} -> dataset '{field_name}'")
+            print(f"  {total_rows} rows | {len(chunk_index)} chunks | {size} MPI ranks")
+        else:
+            chunk_index = None
+            total_rows = 0
+            field_name = None
+            display_name = None
+    else:
+        header_lines = None
+        chunk_index = None
+        total_rows = 0
+        field_name = None
+        display_name = None
+
+    header_lines = comm.bcast(header_lines, root=0)
+    chunk_index = comm.bcast(chunk_index, root=0)
+    total_rows = comm.bcast(total_rows, root=0)
+    field_name = comm.bcast(field_name, root=0)
+    display_name = comm.bcast(display_name, root=0)
+
+    if header_lines is None or not chunk_index:
+        raise RuntimeError(f"Failed to read scalar field header from {txt_path}")
+
+    if field_name in {"vx", "vy", "vz"}:
+        raise ValueError(f"Scalar dataset name '{field_name}' conflicts with required velocity fields.")
+
+    if rank == 0:
+        print("  Discovering scalar field grid in parallel...")
+    txt_x, txt_y, txt_z, dx, dy, dz = discover_grid_from_chunks(txt_path, chunk_index)
+    h5_x, h5_y, h5_z = read_structured_grid(h5_path)
+    validate_matching_structured_grid(txt_path, h5_path, (txt_x, txt_y, txt_z), (h5_x, h5_y, h5_z))
+
+    expected_rows = len(txt_x) * len(txt_y) * len(txt_z)
+    if expected_rows != total_rows:
+        raise ValueError(
+            f"Scalar field grid size ({expected_rows}) does not match text row count ({total_rows}) for {txt_path}."
+        )
+
+    if rank == 0:
+        print("  Redistributing scalar rows into FFT-ready x-slabs...")
+    local_x_bounds, local_scalar, local_rows = redistribute_scalar_to_xslabs(
+        txt_path,
+        chunk_index,
+        txt_x,
+        txt_y,
+        txt_z,
+        dx,
+        dy,
+        dz,
+    )
+
+    if rank == 0:
+        if h5py.get_config().mpi:
+            print("  Writing scalar field into structured HDF5 in parallel...")
+        else:
+            print("  h5py MPI support is unavailable; falling back to serial scalar HDF5 assembly on rank 0...")
+
+    write_scalar_field_to_h5(
+        h5_path,
+        field_name,
+        display_name,
+        local_x_bounds,
+        local_scalar,
+        txt_path,
+    )
+
+    total_written_rows = comm.reduce(local_rows, op=MPI.SUM, root=0)
+    if rank == 0:
+        print(f"  Scalar append complete. Total rows: {total_written_rows}")
+    total_written_rows = comm.bcast(total_written_rows, root=0)
+    if total_written_rows != total_rows:
+        raise ValueError(
+            f"Scalar field row count mismatch for {txt_path}: expected {total_rows}, wrote {total_written_rows}."
+        )
+
+    return field_name
+
+
+def append_scalar_fields_to_h5(txt_paths, h5_path):
+    """Append one or more scalar sampled-data TXT files into an existing structured HDF5 file."""
+    added_fields = []
+    for txt_path in txt_paths:
+        added_fields.append(append_scalar_txt_to_h5_parallel(txt_path, h5_path))
+    return added_fields
 
 
 def convert_h5_to_txt_chunked(h5_path, txt_path):

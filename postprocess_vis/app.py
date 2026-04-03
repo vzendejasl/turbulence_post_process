@@ -21,9 +21,14 @@ from postprocess_fft.transform import get_backend
 from postprocess_fft.transform import local_wavenumber_mesh
 from postprocess_fft.common import heffte
 from postprocess_lib.prepare import ensure_structured_h5
+from postprocess_vis.slice_data import default_slice_data_output
+from postprocess_vis.slice_data import initialize_slice_data_file
+from postprocess_vis.slice_data import storage_slice_tag
+from postprocess_vis.slice_data import write_slice_plane_parallel
+from postprocess_vis.slice_data import write_slice_plane_serial
 
 
-FIELD_MAP = {
+BUILTIN_FIELD_MAP = {
     "velocity_magnitude": ("velocity_magnitude", "velocity_magnitude", r"$|\mathbf{u}|$", "velocity"),
     "vx": ("vx", "vx", r"$u_1$", "velocity"),
     "vy": ("vy", "vy", r"$u_2$", "velocity"),
@@ -61,9 +66,26 @@ def split_axis(length, parts):
 
 def canonical_field_name(field_name):
     """Return the HDF5 field name and human-readable label."""
-    if field_name not in FIELD_MAP:
+    if field_name not in BUILTIN_FIELD_MAP:
         raise ValueError(f"Unsupported field '{field_name}'.")
-    return FIELD_MAP[field_name]
+    return BUILTIN_FIELD_MAP[field_name]
+
+
+def available_field_specs(filepath):
+    """Return the built-in and dataset-backed field specs available in one HDF5 file."""
+    field_specs = dict(BUILTIN_FIELD_MAP)
+    with h5py.File(filepath, "r") as hf:
+        fields = hf["fields"]
+        for dataset_name in sorted(fields.keys()):
+            if dataset_name in {"vx", "vy", "vz"}:
+                continue
+            if dataset_name in field_specs:
+                continue
+            dataset = fields[dataset_name]
+            display_name = str(dataset.attrs.get("display_name", dataset_name))
+            plot_label = str(dataset.attrs.get("plot_label", display_name))
+            field_specs[dataset_name] = (dataset_name, dataset_name, plot_label, "scalar")
+    return field_specs
 
 
 def _plot_style():
@@ -177,58 +199,10 @@ def resolve_slice_index(coords, selector):
     raise ValueError(f"Unknown selector mode '{mode}'.")
 
 
-def gather_plane(axis, plane_index, local_bounds, local_plane, shape, comm):
+def gather_plane(axis, local_bounds, local_plane, shape, comm):
     """Gather one distributed 2D plane back to rank 0."""
     rank = comm.Get_rank()
     gathered = comm.gather((local_bounds, local_plane), root=0)
-    if rank != 0:
-        return None
-
-    nx, ny, nz = shape
-    if axis == "x":
-        for (x_start, x_stop), plane in gathered:
-            if plane is not None:
-                return plane
-        raise ValueError(f"Unable to assemble x-slice at index {plane_index}.")
-
-    if axis == "y":
-        global_plane = np.zeros((nx, nz), dtype=np.float64)
-        for (x_start, x_stop), plane in gathered:
-            if plane is not None and x_stop > x_start:
-                global_plane[x_start:x_stop, :] = plane
-        return global_plane
-
-    global_plane = np.zeros((nx, ny), dtype=np.float64)
-    for (x_start, x_stop), plane in gathered:
-        if plane is not None and x_stop > x_start:
-            global_plane[x_start:x_stop, :] = plane
-    return global_plane
-
-
-def gather_plane_from_boxes(axis, local_box, local_field, shape, plane_index, comm):
-    """Gather one plane from a generic 3D box decomposition."""
-    rank = comm.Get_rank()
-    sx, sy, sz = box_slices(local_box)
-
-    bounds = None
-    piece = None
-    if axis == "x":
-        if sx.start <= plane_index < sx.stop:
-            local_index = plane_index - sx.start
-            piece = np.asarray(local_field[local_index, :, :], dtype=np.float64)
-            bounds = (sy.start, sy.stop, sz.start, sz.stop)
-    elif axis == "y":
-        if sy.start <= plane_index < sy.stop:
-            local_index = plane_index - sy.start
-            piece = np.asarray(local_field[:, local_index, :], dtype=np.float64)
-            bounds = (sx.start, sx.stop, sz.start, sz.stop)
-    else:
-        if sz.start <= plane_index < sz.stop:
-            local_index = plane_index - sz.start
-            piece = np.asarray(local_field[:, :, local_index], dtype=np.float64)
-            bounds = (sx.start, sx.stop, sy.start, sy.stop)
-
-    gathered = comm.gather((bounds, piece), root=0)
     if rank != 0:
         return None
 
@@ -260,13 +234,45 @@ def gather_plane_from_boxes(axis, local_box, local_field, shape, plane_index, co
     return plane
 
 
-def extract_plane_parallel(filepath, dataset_name, axis, plane_index, meta, comm):
-    """Read only the requested HDF5 plane in parallel."""
+def extract_plane_from_boxes_local(axis, local_box, local_field, plane_index):
+    """Extract one rank-local piece of a plane from a generic 3D box decomposition."""
+    sx, sy, sz = box_slices(local_box)
+
+    bounds = None
+    piece = None
+    if axis == "x":
+        if sx.start <= plane_index < sx.stop:
+            local_index = plane_index - sx.start
+            piece = np.asarray(local_field[local_index, :, :], dtype=np.float64)
+            bounds = (sy.start, sy.stop, sz.start, sz.stop)
+    elif axis == "y":
+        if sy.start <= plane_index < sy.stop:
+            local_index = plane_index - sy.start
+            piece = np.asarray(local_field[:, local_index, :], dtype=np.float64)
+            bounds = (sx.start, sx.stop, sz.start, sz.stop)
+    else:
+        if sz.start <= plane_index < sz.stop:
+            local_index = plane_index - sz.start
+            piece = np.asarray(local_field[:, :, local_index], dtype=np.float64)
+            bounds = (sx.start, sx.stop, sy.start, sy.stop)
+
+    return bounds, piece
+
+
+def gather_plane_from_boxes(axis, local_box, local_field, shape, plane_index, comm):
+    """Gather one plane from a generic 3D box decomposition."""
+    local_bounds, local_plane = extract_plane_from_boxes_local(axis, local_box, local_field, plane_index)
+    return gather_plane(axis, local_bounds, local_plane, shape, comm)
+
+
+def extract_plane_parallel_local(filepath, dataset_name, axis, plane_index, meta, comm):
+    """Read the rank-local piece of one requested HDF5 plane in parallel."""
     shape = meta["shape"]
     nx, ny, nz = shape
     x_ranges = split_axis(nx, comm.Get_size())
     x_start, x_stop = x_ranges[comm.Get_rank()]
 
+    local_bounds = None
     local_plane = None
     with open_h5_for_parallel_read(filepath, comm) as hf:
         if dataset_name == "velocity_magnitude":
@@ -279,27 +285,39 @@ def extract_plane_parallel(filepath, dataset_name, axis, plane_index, meta, comm
                     vy_plane = np.asarray(vy_field[plane_index, :ny, :nz], dtype=np.float64)
                     vz_plane = np.asarray(vz_field[plane_index, :ny, :nz], dtype=np.float64)
                     local_plane = np.sqrt(vx_plane**2 + vy_plane**2 + vz_plane**2)
+                    local_bounds = (0, ny, 0, nz)
             elif axis == "y":
                 vx_plane = np.asarray(vx_field[x_start:x_stop, plane_index, :nz], dtype=np.float64)
                 vy_plane = np.asarray(vy_field[x_start:x_stop, plane_index, :nz], dtype=np.float64)
                 vz_plane = np.asarray(vz_field[x_start:x_stop, plane_index, :nz], dtype=np.float64)
                 local_plane = np.sqrt(vx_plane**2 + vy_plane**2 + vz_plane**2)
+                local_bounds = (x_start, x_stop, 0, nz)
             else:
                 vx_plane = np.asarray(vx_field[x_start:x_stop, :ny, plane_index], dtype=np.float64)
                 vy_plane = np.asarray(vy_field[x_start:x_stop, :ny, plane_index], dtype=np.float64)
                 vz_plane = np.asarray(vz_field[x_start:x_stop, :ny, plane_index], dtype=np.float64)
                 local_plane = np.sqrt(vx_plane**2 + vy_plane**2 + vz_plane**2)
+                local_bounds = (x_start, x_stop, 0, ny)
         else:
             field = hf["fields"][dataset_name]
             if axis == "x":
                 if x_start <= plane_index < x_stop:
                     local_plane = np.asarray(field[plane_index, :ny, :nz], dtype=np.float64)
+                    local_bounds = (0, ny, 0, nz)
             elif axis == "y":
                 local_plane = np.asarray(field[x_start:x_stop, plane_index, :nz], dtype=np.float64)
+                local_bounds = (x_start, x_stop, 0, nz)
             else:
                 local_plane = np.asarray(field[x_start:x_stop, :ny, plane_index], dtype=np.float64)
+                local_bounds = (x_start, x_stop, 0, ny)
 
-    return gather_plane(axis, plane_index, (x_start, x_stop), local_plane, shape, comm)
+    return local_bounds, local_plane
+
+
+def extract_plane_parallel(filepath, dataset_name, axis, plane_index, meta, comm):
+    """Read only the requested HDF5 plane in parallel."""
+    local_bounds, local_plane = extract_plane_parallel_local(filepath, dataset_name, axis, plane_index, meta, comm)
+    return gather_plane(axis, local_bounds, local_plane, meta["shape"], comm)
 
 
 def compute_local_vorticity_fields(filepath, meta, comm, backend_name):
@@ -488,10 +506,27 @@ def build_slice_requests(meta, slice_specs, default_axis):
     return requests
 
 
+def resolve_requested_fields(filepath, field_names):
+    """Resolve requested field names against the available HDF5-backed field specs."""
+    field_lookup = available_field_specs(filepath)
+    if field_names:
+        requested_fields = list(field_names)
+    else:
+        scalar_fields = [name for name, spec in field_lookup.items() if spec[3] == "scalar"]
+        requested_fields = ["velocity_magnitude", "vorticity_magnitude", *scalar_fields]
+
+    missing = [name for name in requested_fields if name not in field_lookup]
+    if missing:
+        available = ", ".join(sorted(field_lookup))
+        raise ValueError(f"Unsupported field(s): {', '.join(missing)}. Available fields: {available}")
+
+    return [field_lookup[name] for name in requested_fields]
+
+
 def run_visualization(
     data_file,
     axis="z",
-    field_name=None,
+    field_names=None,
     cmap="RdBu_r",
     width=None,
     output=None,
@@ -503,6 +538,8 @@ def run_visualization(
     output_format="pdf",
     save_dpi=300,
     figure_size=8.0,
+    save_slice_data=True,
+    slice_data_output=None,
 ):
     """Render one or more slice images from a structured HDF5 velocity file."""
     if comm is None:
@@ -510,10 +547,10 @@ def run_visualization(
     rank = comm.Get_rank()
 
     prepared_path = data_file if assume_structured_h5 else ensure_structured_h5(data_file)
-    requested_fields = [field_name] if field_name is not None else ["velocity_magnitude", "vorticity_magnitude"]
-    field_specs = [canonical_field_name(name) for name in requested_fields]
+    field_specs = resolve_requested_fields(prepared_path, field_names)
     meta = read_grid_metadata(prepared_path)
     requests = build_slice_requests(meta, slice_specs, axis)
+    saved_slice_data_path = slice_data_output or default_slice_data_output(prepared_path)
 
     if output and (len(requests) != 1 or len(field_specs) != 1):
         raise ValueError("--output can only be used when rendering a single slice.")
@@ -529,6 +566,21 @@ def run_visualization(
         print(f"Loading {prepared_path} with {comm.Get_size()} MPI ranks...")
         print(f"Structured domain dimensions: {meta['shape']}")
         print(f"Rendering {len(requests)} slice(s) for {len(field_specs)} field set(s)...")
+        if save_slice_data:
+            print(f"Saving reusable slice data to: {saved_slice_data_path}")
+
+    if save_slice_data:
+        if rank == 0:
+            initialize_slice_data_file(
+                saved_slice_data_path,
+                meta,
+                field_specs,
+                requests,
+                data_file,
+                prepared_path,
+                backend_name,
+            )
+        comm.Barrier()
 
     if needs_vorticity:
         if rank == 0:
@@ -540,17 +592,41 @@ def run_visualization(
         if rank == 0:
             print(f"Field: {field_label}")
         for axis_name, plane_index, slice_tag in requests:
+            stored_slice_tag = storage_slice_tag(axis_name, slice_tag)
             if field_family == "vorticity":
-                plane = gather_plane_from_boxes(
+                local_bounds, local_plane = extract_plane_from_boxes_local(
                     axis_name,
                     vorticity_cache["local_box"],
                     vorticity_cache[dataset_name],
-                    meta["shape"],
                     plane_index,
-                    comm,
                 )
             else:
-                plane = extract_plane_parallel(prepared_path, dataset_name, axis_name, plane_index, meta, comm)
+                local_bounds, local_plane = extract_plane_parallel_local(
+                    prepared_path,
+                    dataset_name,
+                    axis_name,
+                    plane_index,
+                    meta,
+                    comm,
+                )
+
+            if save_slice_data:
+                if h5py.get_config().mpi:
+                    write_slice_plane_parallel(
+                        saved_slice_data_path,
+                        field_label,
+                        stored_slice_tag,
+                        axis_name,
+                        local_bounds,
+                        local_plane,
+                        comm,
+                    )
+                else:
+                    plane = gather_plane(axis_name, local_bounds, local_plane, meta["shape"], comm)
+                    if rank == 0:
+                        write_slice_plane_serial(saved_slice_data_path, field_label, stored_slice_tag, plane)
+                    comm.Barrier()
+            plane = gather_plane(axis_name, local_bounds, local_plane, meta["shape"], comm)
 
             rendered = None
             if rank == 0:
@@ -580,7 +656,7 @@ def run_visualization(
             if rank != 0:
                 outputs.append(rendered)
 
-    return outputs
+    return outputs, (saved_slice_data_path if save_slice_data else None)
 
 
 def main():
@@ -595,17 +671,19 @@ def main():
     parser.add_argument("--axis", default="z", choices=["x", "y", "z"], help="Default center-slice axis if --slice is omitted")
     parser.add_argument(
         "--field",
-        default=None,
-        choices=sorted(FIELD_MAP),
-        help="Field to plot. If omitted, render both velocity and vorticity magnitudes.",
+        action="append",
+        default=[],
+        help="Field to plot. Repeat to render multiple fields. If omitted, render velocity, vorticity, and any appended scalar fields.",
     )
     parser.add_argument("--cmap", default="RdBu_r", help="Matplotlib colormap")
     parser.add_argument("--width", type=float, default=None, help="Optional square plot width in domain units")
     parser.add_argument("--format", default="pdf", choices=["pdf", "png"], help="Output image format. Default is pdf.")
-    parser.add_argument("--dpi", type=int, default=300, help="Raster save DPI. Default is 300.")
+    parser.add_argument("--dpi", type=int, default=600, help="Raster save DPI. Default is 600.")
     parser.add_argument("--figsize", type=float, default=8.0, help="Square figure size in inches. Default is 8.0.")
     parser.add_argument("--output", default=None, help="Optional output path for a single slice")
     parser.add_argument("--plot", action="store_true", help="Also display the plot on rank 0 after saving")
+    parser.add_argument("--no-slice-data", action="store_true", help="Skip writing the combined *_slices.h5 file.")
+    parser.add_argument("--slice-data-output", default=None, help="Optional path for the combined slice-data HDF5 file.")
     parser.add_argument(
         "--backend",
         default="heffte_fftw",
@@ -616,7 +694,7 @@ def main():
     run_visualization(
         args.data_file,
         axis=args.axis,
-        field_name=args.field,
+        field_names=args.field,
         cmap=args.cmap,
         width=args.width,
         output=args.output,
@@ -626,4 +704,6 @@ def main():
         output_format=args.format,
         save_dpi=args.dpi,
         figure_size=args.figsize,
+        save_slice_data=not args.no_slice_data,
+        slice_data_output=args.slice_data_output,
     )
