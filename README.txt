@@ -98,6 +98,7 @@ Run:
 
   mpirun -n 4 python main.py your_data.txt
   mpirun -n 4 python main.py your_data.h5
+  mpirun -n 4 python main.py dedalus_fields_s2.h5
   mpirun -n 4 python tools/ComputeSpectra.py your_data.h5 --backend heffte_fftw --no-plot
   mpirun -n 4 python tools/convert_txt_to_hdf5.py your_data.txt
   mpirun -n 4 python tools/visualize_velocity_yt.py your_data.h5 --slice z:center --field vx
@@ -110,6 +111,9 @@ Main.py command patterns:
 
   Basic structured-HDF5 input:
     mpirun -n 4 python main.py your_velocity_data.h5
+
+  Dedalus field-output HDF5 input:
+    mpirun -n 4 python main.py your_dedalus_fields_s2.h5
 
   Basic TXT input:
     mpirun -n 4 python main.py your_velocity_data.txt
@@ -145,16 +149,28 @@ Main.py command patterns:
 What main.py now does:
   1. Accepts .txt or .h5 input.
   2. Converts TXT to structured FFT-ready HDF5 when needed.
-  3. Optionally appends one or more scalar sampled-data TXT files into /fields/<scalar_name>
+  3. If the .h5 input is a Dedalus field-output file with /tasks/u, it imports the latest
+     saved write into one structured FFT-ready snapshot named <input>_writeXXXXX.h5.
+  4. Optionally appends one or more scalar sampled-data TXT files into /fields/<scalar_name>
      of the structured HDF5.
-  4. Runs the FFT/spectra workflow on the resulting HDF5.
-  5. Writes one or more slice PDFs after the FFT step.
+  5. Runs the FFT/spectra workflow on the resulting HDF5.
+  6. Writes one or more slice PDFs after the FFT step.
 
 Files written by the integrated pipeline:
   - the structured .h5 is written next to the original .txt input
+  - Dedalus field-output input writes one structured snapshot named <input>_writeXXXXX.h5
+    next to the original field file
   - the FFT spectra .txt and spectra metadata .txt are written next to that .h5 file
   - the slice plots are written under slice_plots/ next to that .h5 file
   - the raw slice data are written under slice_data/ as one combined <base>_slices.h5 file
+
+Dedalus notes:
+  - The importer currently reads Dedalus field-handler HDF5 written with tasks/u.
+  - It selects the latest saved write in the file by default.
+  - Dedalus field files may use virtual datasets, so the importer uses independent HDF5
+    reads on each MPI rank instead of collective MPI-IO for the source file.
+  - The import is still parallel: each MPI rank reads only its own local x-slab from the
+    Dedalus source file before the normal FFT and slice workflow runs.
 
 Default slice outputs from main.py:
   - xy_center_velocity_magnitude.pdf

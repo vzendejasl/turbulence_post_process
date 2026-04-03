@@ -64,6 +64,91 @@ def is_structured_velocity_hdf5(h5_file):
     )
 
 
+def is_dedalus_field_output_hdf5(h5_file):
+    """Return True for Dedalus field-output files with vector velocity tasks."""
+    if "tasks" not in h5_file or "scales" not in h5_file:
+        return False
+    if "u" not in h5_file["tasks"]:
+        return False
+    u_task = h5_file["tasks"]["u"]
+    return u_task.ndim == 5 and u_task.shape[1] == 3
+
+
+def dedalus_coordinate_dataset_names(h5_file):
+    """Return the Dedalus coordinate scale dataset names for x/y/z."""
+    scale_keys = list(h5_file["scales"].keys())
+    names = {}
+    for axis in ("x", "y", "z"):
+        matches = [key for key in scale_keys if key.startswith(f"{axis}_hash_")]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Could not identify the Dedalus {axis}-coordinate dataset uniquely. "
+                f"Found: {matches!r}"
+            )
+        names[axis] = matches[0]
+    return names["x"], names["y"], names["z"]
+
+
+def dedalus_snapshot_info(path, write_index=-1):
+    """Read one Dedalus field-output file and describe the selected snapshot."""
+    with h5py.File(path, "r") as hf:
+        if not is_dedalus_field_output_hdf5(hf):
+            raise ValueError(f"{path} is not a Dedalus field-output HDF5 file.")
+
+        x_name, y_name, z_name = dedalus_coordinate_dataset_names(hf)
+        x_coords = np.asarray(hf["scales"][x_name][:], dtype=np.float64)
+        y_coords = np.asarray(hf["scales"][y_name][:], dtype=np.float64)
+        z_coords = np.asarray(hf["scales"][z_name][:], dtype=np.float64)
+
+        u_task = hf["tasks"]["u"]
+        num_writes = int(u_task.shape[0])
+        selected = int(write_index)
+        if selected < 0:
+            selected += num_writes
+        if selected < 0 or selected >= num_writes:
+            raise IndexError(
+                f"Requested Dedalus write index {write_index} is out of bounds for {num_writes} writes."
+            )
+
+        sim_time = float(np.asarray(hf["scales"]["sim_time"][selected]))
+        write_number = int(np.asarray(hf["scales"]["write_number"][selected]))
+        cycle = None
+        if "cycle" in hf["tasks"]:
+            cycle = int(np.asarray(hf["tasks"]["cycle"][selected]).reshape(-1)[0])
+
+        return {
+            "shape": (len(x_coords), len(y_coords), len(z_coords)),
+            "x": x_coords,
+            "y": y_coords,
+            "z": z_coords,
+            "selected_index": selected,
+            "num_writes": num_writes,
+            "sim_time": sim_time,
+            "write_number": write_number,
+            "cycle": cycle,
+            "set_number": int(hf.attrs.get("set_number", 0)),
+            "handler_name": str(hf.attrs.get("handler_name", "dedalus_fields")),
+        }
+
+
+def dedalus_snapshot_output_path(input_path, snapshot_info):
+    """Return the structured-output path for one imported Dedalus snapshot."""
+    base, _ = os.path.splitext(input_path)
+    return f"{base}_write{snapshot_info['write_number']:05d}.h5"
+
+
+def dedalus_header_lines(input_path, snapshot_info):
+    """Create header-like metadata lines for an imported Dedalus snapshot."""
+    cycle = snapshot_info["cycle"]
+    cycle_text = "unknown" if cycle is None else str(cycle)
+    return [
+        f"# Imported from Dedalus field output: {os.path.abspath(input_path)}\n",
+        f"# Write Number: {snapshot_info['write_number']}\n",
+        f"# Cycle: {cycle_text}\n",
+        f"# Time: {snapshot_info['sim_time']:.16e}\n",
+    ]
+
+
 def parse_header_metadata(header_lines):
     """Extract step/time metadata from the preserved text header."""
     step_number = "unknown"
@@ -144,6 +229,11 @@ def open_h5_for_read(path):
     """Use MPI-IO when available; otherwise fall back to independent HDF5 reads."""
     if h5py.get_config().mpi:
         return h5py.File(path, "r", driver="mpio", comm=comm)
+    return h5py.File(path, "r")
+
+
+def open_h5_for_independent_read(path):
+    """Open one HDF5 file without MPI-IO, even inside an MPI run."""
     return h5py.File(path, "r")
 
 
@@ -450,6 +540,11 @@ def write_structured_h5(
     local_vy,
     local_vz,
     header_lines,
+    *,
+    step_number=None,
+    time_value=None,
+    periodic_duplicate_last=True,
+    extra_attrs=None,
 ):
     """Write the structured FFT-ready HDF5 file, using MPI-IO when available."""
     global_shape = (len(x_unique), len(y_unique), len(z_unique))
@@ -489,7 +584,12 @@ def write_structured_h5(
     comm.Barrier()
 
     if rank == 0:
-        step_number, time_value = parse_header_metadata(header_lines)
+        if step_number is None or time_value is None:
+            parsed_step, parsed_time = parse_header_metadata(header_lines)
+            if step_number is None:
+                step_number = parsed_step
+            if time_value is None:
+                time_value = parsed_time
         with h5py.File(h5_path, "a") as hf:
             grid = hf.create_group("grid")
             grid.create_dataset("x", data=x_unique)
@@ -504,13 +604,18 @@ def write_structured_h5(
             )
 
             hf.attrs["schema"] = "structured_velocity_v1"
-            hf.attrs["periodic_duplicate_last"] = True
+            hf.attrs["periodic_duplicate_last"] = bool(periodic_duplicate_last)
             hf.attrs["Nx"] = int(global_shape[0])
             hf.attrs["Ny"] = int(global_shape[1])
             hf.attrs["Nz"] = int(global_shape[2])
-            hf.attrs["fft_nx"] = int(max(global_shape[0] - 1, 1))
-            hf.attrs["fft_ny"] = int(max(global_shape[1] - 1, 1))
-            hf.attrs["fft_nz"] = int(max(global_shape[2] - 1, 1))
+            if periodic_duplicate_last:
+                hf.attrs["fft_nx"] = int(max(global_shape[0] - 1, 1))
+                hf.attrs["fft_ny"] = int(max(global_shape[1] - 1, 1))
+                hf.attrs["fft_nz"] = int(max(global_shape[2] - 1, 1))
+            else:
+                hf.attrs["fft_nx"] = int(global_shape[0])
+                hf.attrs["fft_ny"] = int(global_shape[1])
+                hf.attrs["fft_nz"] = int(global_shape[2])
             hf.attrs["dx"] = float(x_unique[1] - x_unique[0]) if len(x_unique) > 1 else 1.0
             hf.attrs["dy"] = float(y_unique[1] - y_unique[0]) if len(y_unique) > 1 else 1.0
             hf.attrs["dz"] = float(z_unique[1] - z_unique[0]) if len(z_unique) > 1 else 1.0
@@ -522,6 +627,121 @@ def write_structured_h5(
             hf.attrs["zmax"] = float(z_unique[-1])
             hf.attrs["step"] = step_number
             hf.attrs["time"] = float(time_value)
+            if extra_attrs:
+                for key, value in extra_attrs.items():
+                    hf.attrs[key] = value
+
+
+def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write_index=-1):
+    """Import one Dedalus velocity snapshot into the structured FFT-ready HDF5 schema."""
+    snapshot_info = comm.bcast(
+        dedalus_snapshot_info(input_path, write_index=write_index) if rank == 0 else None,
+        root=0,
+    )
+    if output_path is None:
+        output_path = dedalus_snapshot_output_path(input_path, snapshot_info)
+    output_path = comm.bcast(output_path if rank == 0 else None, root=0)
+
+    x_unique = snapshot_info["x"]
+    y_unique = snapshot_info["y"]
+    z_unique = snapshot_info["z"]
+    nx = snapshot_info["shape"][0]
+    x_ranges = split_axis(nx, size)
+    x_start, x_stop = x_ranges[rank]
+
+    if rank == 0:
+        print(f"\nProcessing: {input_path}")
+        print("  Input is Dedalus field-output HDF5.")
+        print(
+            f"  Selected write {snapshot_info['selected_index'] + 1}/{snapshot_info['num_writes']} "
+            f"(write_number={snapshot_info['write_number']}, time={snapshot_info['sim_time']:.16e})"
+        )
+        if snapshot_info["cycle"] is not None:
+            print(f"  Cycle: {snapshot_info['cycle']}")
+        print("  Reading Dedalus velocity task with independent serial HDF5 reads on each rank...")
+
+    with open_h5_for_independent_read(input_path) as hf:
+        u_task = hf["tasks"]["u"]
+        local_vx = np.asarray(
+            u_task[snapshot_info["selected_index"], 0, x_start:x_stop, :, :],
+            dtype=np.float64,
+        )
+        local_vy = np.asarray(
+            u_task[snapshot_info["selected_index"], 1, x_start:x_stop, :, :],
+            dtype=np.float64,
+        )
+        local_vz = np.asarray(
+            u_task[snapshot_info["selected_index"], 2, x_start:x_stop, :, :],
+            dtype=np.float64,
+        )
+
+    running_sum_sq = np.sum(local_vx**2 + local_vy**2 + local_vz**2, dtype=np.float64)
+    global_points = int(np.prod(snapshot_info["shape"]))
+    global_sum_sq = comm.reduce(running_sum_sq, op=MPI.SUM, root=0)
+
+    if rank == 0:
+        if h5py.get_config().mpi:
+            print("  Writing structured HDF5 in parallel...")
+        else:
+            print("  h5py MPI support is unavailable; falling back to serial HDF5 assembly on rank 0...")
+
+    write_structured_h5(
+        output_path,
+        x_unique,
+        y_unique,
+        z_unique,
+        (x_start, x_stop),
+        local_vx,
+        local_vy,
+        local_vz,
+        dedalus_header_lines(input_path, snapshot_info),
+        step_number=str(snapshot_info["cycle"]) if snapshot_info["cycle"] is not None else str(snapshot_info["write_number"]),
+        time_value=float(snapshot_info["sim_time"]),
+        periodic_duplicate_last=False,
+        extra_attrs={
+            "source_format": "dedalus_field_output_v1",
+            "source_file": os.path.abspath(input_path),
+            "source_write_index": int(snapshot_info["selected_index"]),
+            "source_write_number": int(snapshot_info["write_number"]),
+            "source_cycle": int(snapshot_info["cycle"]) if snapshot_info["cycle"] is not None else -1,
+            "source_handler_name": snapshot_info["handler_name"],
+            "source_set_number": int(snapshot_info["set_number"]),
+        },
+    )
+
+    output_tke = None
+    if rank == 0:
+        output_tke = 0.5 * (global_sum_sq / global_points)
+        print(f"  Import complete. Total grid points: {global_points}")
+    output_tke = comm.bcast(output_tke, root=0)
+
+    verified_tke, verified_rows = calculate_file_tke_parallel(output_path)
+    if verified_tke is None:
+        raise RuntimeError(f"Verification failed for imported Dedalus snapshot {output_path}")
+
+    success = False
+    if rank == 0:
+        print(f"  Original TKE:       {output_tke:.16f}")
+        print(f"  Reconstructed TKE:  {verified_tke:.16f}")
+        print(f"  Original Rows:      {global_points}")
+        print(f"  Reconstructed Rows: {verified_rows}")
+
+        tke_match = np.isclose(output_tke, verified_tke, atol=1e-12)
+        row_match = global_points == verified_rows
+        if tke_match and row_match:
+            print("  SUCCESS: TKE and Row Counts match.")
+            print_storage_stats(input_path, output_path)
+            success = True
+        else:
+            raise RuntimeError(
+                "Dedalus snapshot import integrity check failed: "
+                f"TKE match={tke_match}, row match={row_match}."
+            )
+
+    success = comm.bcast(success, root=0)
+    if not success:
+        raise RuntimeError(f"Failed to import Dedalus snapshot from {input_path}")
+    return output_path
 
 
 def write_scalar_field_to_h5(

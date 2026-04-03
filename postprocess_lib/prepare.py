@@ -58,6 +58,12 @@ def validate_structured_h5(path):
         return converter.is_structured_velocity_hdf5(hf)
 
 
+def validate_dedalus_field_h5(path):
+    """Return True when an HDF5 file is a Dedalus field-output snapshot container."""
+    with h5py.File(path, "r") as hf:
+        return converter.is_dedalus_field_output_hdf5(hf)
+
+
 def ensure_structured_h5(path):
     """
     Accept either TXT or HDF5 input and return a structured FFT-ready HDF5 path.
@@ -82,15 +88,19 @@ def ensure_structured_h5(path):
 
         structured = validate_structured_h5(path) if rank == 0 else None
         structured = comm.bcast(structured, root=0)
-        if not structured:
-            raise ValueError(
-                f"{path} is not a structured FFT-ready HDF5 file. "
-                "Convert the TXT input first."
-            )
+        if structured:
+            if rank == 0:
+                print("  Input is already structured FFT-ready HDF5.")
+                print(f"  Using existing HDF5: {path}")
+            return path
 
-        if rank == 0:
-            print("  Input is already structured FFT-ready HDF5.")
-            print(f"  Using existing HDF5: {path}")
-        return path
+        dedalus_field_output = validate_dedalus_field_h5(path) if rank == 0 else None
+        dedalus_field_output = comm.bcast(dedalus_field_output, root=0)
+        if dedalus_field_output:
+            return converter.import_dedalus_snapshot_to_structured_h5(path)
+
+        raise ValueError(
+            f"{path} is not a structured FFT-ready HDF5 file or a supported Dedalus field-output HDF5 file."
+        )
 
     raise ValueError(f"Unsupported extension '{ext}'. Expected .txt or .h5.")
