@@ -67,6 +67,13 @@ Examples:
     )
     parser.add_argument("--slice-cmap", default="RdBu_r", help="Colormap for slice plots")
     parser.add_argument("--slice-width", type=float, default=None, help="Optional square plot width in domain units")
+    parser.add_argument("--slice-dpi", type=int, default=300, help="Slice image save DPI. Default is 300.")
+    parser.add_argument(
+        "--slice-figsize",
+        type=float,
+        default=8.0,
+        help="Square slice figure size in inches. Default is 8.0.",
+    )
     parser.add_argument(
         "--slice-format",
         default="pdf",
@@ -147,7 +154,8 @@ Examples:
                     assume_structured_h5=True,
                     backend_name=args.backend,
                     output_format=args.slice_format,
-                    save_dpi=300,
+                    save_dpi=args.slice_dpi,
+                    figure_size=args.slice_figsize,
                 )
                 if rank == 0:
                     slice_outputs.extend(rendered)

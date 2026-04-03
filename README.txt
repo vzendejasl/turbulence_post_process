@@ -128,6 +128,7 @@ Default slice outputs from main.py:
 Slice output defaults:
   - format: pdf
   - save dpi: 300
+  - square figure size: 8.0 inches
 
 Canonical slice field names:
   - velocity_magnitude
@@ -191,7 +192,17 @@ Supported slice selectors:
 Optional interactive plotting:
 
   python tools/visualize_velocity_yt.py data/SampledData0.h5 --slice z:center --field vorticity_magnitude --plot
-  python tools/visualize_velocity_yt.py data/SampledData0.h5 --format png --dpi 300
+  python tools/visualize_velocity_yt.py data/SampledData0.h5 --format png --dpi 300 --figsize 8
+
+Useful controls:
+  - main.py:
+      --slice-format {pdf,png}
+      --slice-dpi 600
+      --slice-figsize 10
+  - tools/visualize_velocity_yt.py:
+      --format {pdf,png}
+      --dpi 600
+      --figsize 10
 
 Output:
 

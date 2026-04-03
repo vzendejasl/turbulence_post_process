@@ -409,14 +409,27 @@ def format_colorbar_ticklabels(tick_values):
     return labels
 
 
-def render_plane_image(plane, meta, axis, plane_index, field_label, latex_label, cmap, width, output, plot, save_dpi):
+def render_plane_image(
+    plane,
+    meta,
+    axis,
+    plane_index,
+    field_label,
+    latex_label,
+    cmap,
+    width,
+    output,
+    plot,
+    save_dpi,
+    figure_size,
+):
     """Render one plane to disk on rank 0."""
     plane = np.asarray(plane, dtype=np.float64).copy()
     plane[np.abs(plane) < 1.0e-12] = 0.0
     plane = np.round(plane, decimals=10)
     info = plane_axes_and_extent(meta, axis)
     with plt.rc_context(_plot_style()):
-        fig, ax = plt.subplots(figsize=(7.6, 6.2))
+        fig, ax = plt.subplots(figsize=(figure_size, figure_size))
         image = ax.imshow(
             plane,
             origin="lower",
@@ -425,6 +438,7 @@ def render_plane_image(plane, meta, axis, plane_index, field_label, latex_label,
             interpolation="nearest",
             aspect="equal",
         )
+        ax.set_box_aspect(1)
         axis_label_map = {"x": r"$x$", "y": r"$y$", "z": r"$z$"}
         ax.set_xlabel(axis_label_map[info["horizontal_name"]], fontsize=24)
         ax.set_ylabel(axis_label_map[info["vertical_name"]], fontsize=24)
@@ -488,6 +502,7 @@ def run_visualization(
     backend_name="heffte_fftw",
     output_format="pdf",
     save_dpi=300,
+    figure_size=8.0,
 ):
     """Render one or more slice images from a structured HDF5 velocity file."""
     if comm is None:
@@ -557,6 +572,7 @@ def run_visualization(
                     rendered,
                     plot,
                     save_dpi,
+                    figure_size,
                 )
                 outputs.append(rendered)
             rendered = comm.bcast(rendered, root=0)
@@ -587,6 +603,7 @@ def main():
     parser.add_argument("--width", type=float, default=None, help="Optional square plot width in domain units")
     parser.add_argument("--format", default="pdf", choices=["pdf", "png"], help="Output image format. Default is pdf.")
     parser.add_argument("--dpi", type=int, default=300, help="Raster save DPI. Default is 300.")
+    parser.add_argument("--figsize", type=float, default=8.0, help="Square figure size in inches. Default is 8.0.")
     parser.add_argument("--output", default=None, help="Optional output path for a single slice")
     parser.add_argument("--plot", action="store_true", help="Also display the plot on rank 0 after saving")
     parser.add_argument(
@@ -608,4 +625,5 @@ def main():
         backend_name=args.backend,
         output_format=args.format,
         save_dpi=args.dpi,
+        figure_size=args.figsize,
     )
