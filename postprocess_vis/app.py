@@ -438,6 +438,15 @@ def format_colorbar_ticklabels(tick_values):
     return labels
 
 
+DEFAULT_INTERPOLATIONS = ("nearest", "bilinear")
+
+
+def interpolation_output_path(output, interpolation):
+    """Append the interpolation mode to one output filename."""
+    base, ext = os.path.splitext(output)
+    return f"{base}_{interpolation}{ext}"
+
+
 def render_plane_image(
     plane,
     meta,
@@ -452,39 +461,46 @@ def render_plane_image(
     save_dpi,
     figure_size,
 ):
-    """Render one plane to disk on rank 0."""
+    """Render one plane to disk on rank 0 with multiple interpolation styles."""
     plane = np.asarray(plane, dtype=np.float64).copy()
     plane[np.abs(plane) < 1.0e-12] = 0.0
     plane = np.round(plane, decimals=10)
     info = plane_axes_and_extent(meta, axis)
-    with plt.rc_context(_plot_style()):
-        fig, ax = plt.subplots(figsize=(figure_size, figure_size))
-        image = ax.imshow(
-            plane,
-            origin="lower",
-            extent=info["extent"],
-            cmap=cmap,
-            interpolation="nearest",
-            aspect="equal",
-        )
-        ax.set_box_aspect(1)
-        axis_label_map = {"x": r"$x$", "y": r"$y$", "z": r"$z$"}
-        ax.set_xlabel(axis_label_map[info["horizontal_name"]], fontsize=24)
-        ax.set_ylabel(axis_label_map[info["vertical_name"]], fontsize=24)
-        apply_width(ax, meta, axis, width)
-        tick_values = np.linspace(float(np.min(plane)), float(np.max(plane)), 8)
-        if np.allclose(tick_values[0], tick_values[-1]):
-            tick_values = np.array([tick_values[0]])
-        colorbar = fig.colorbar(image, ax=ax, label=latex_label, ticks=tick_values)
-        colorbar.ax.tick_params(labelsize=20)
-        colorbar.ax.set_yticklabels(format_colorbar_ticklabels(tick_values))
-        colorbar.set_label(latex_label, size=24)
-        fig.tight_layout()
-        fig.savefig(output, dpi=save_dpi)
-        print(f"Saved: {output}")
-        if plot:
-            plt.show()
-        plt.close(fig)
+    tick_values = np.linspace(float(np.min(plane)), float(np.max(plane)), 8)
+    if np.allclose(tick_values[0], tick_values[-1]):
+        tick_values = np.array([tick_values[0]])
+
+    outputs = []
+    for interpolation in DEFAULT_INTERPOLATIONS:
+        interpolated_output = interpolation_output_path(output, interpolation)
+        with plt.rc_context(_plot_style()):
+            fig, ax = plt.subplots(figsize=(figure_size, figure_size))
+            image = ax.imshow(
+                plane,
+                origin="lower",
+                extent=info["extent"],
+                cmap=cmap,
+                interpolation=interpolation,
+                aspect="equal",
+            )
+            ax.set_box_aspect(1)
+            axis_label_map = {"x": r"$x$", "y": r"$y$", "z": r"$z$"}
+            ax.set_xlabel(axis_label_map[info["horizontal_name"]], fontsize=24)
+            ax.set_ylabel(axis_label_map[info["vertical_name"]], fontsize=24)
+            apply_width(ax, meta, axis, width)
+            colorbar = fig.colorbar(image, ax=ax, label=latex_label, ticks=tick_values)
+            colorbar.ax.tick_params(labelsize=20)
+            colorbar.ax.set_yticklabels(format_colorbar_ticklabels(tick_values))
+            colorbar.set_label(latex_label, size=24)
+            fig.tight_layout()
+            fig.savefig(interpolated_output, dpi=save_dpi)
+            print(f"Saved: {interpolated_output}")
+            if plot:
+                plt.show()
+            plt.close(fig)
+        outputs.append(interpolated_output)
+
+    return outputs
 
 
 def build_slice_requests(meta, slice_specs, default_axis):
@@ -653,7 +669,7 @@ def run_visualization(
                     slice_tag,
                     output_format,
                 )
-                render_plane_image(
+                rendered_paths = render_plane_image(
                     plane,
                     meta,
                     axis_name,
@@ -667,11 +683,11 @@ def run_visualization(
                     save_dpi,
                     figure_size,
                 )
-                outputs.append(rendered)
+                outputs.extend(rendered_paths)
             rendered = comm.bcast(rendered, root=0)
             comm.Barrier()
             if rank != 0:
-                outputs.append(rendered)
+                outputs.extend(interpolation_output_path(rendered, mode) for mode in DEFAULT_INTERPOLATIONS)
 
     return outputs, (saved_slice_data_path if save_slice_data else None)
 

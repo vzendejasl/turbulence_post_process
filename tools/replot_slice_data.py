@@ -48,6 +48,15 @@ def format_colorbar_ticklabels(tick_values):
     return labels
 
 
+DEFAULT_INTERPOLATIONS = ("nearest", "bilinear")
+
+
+def interpolation_output_path(output, interpolation):
+    """Append the interpolation mode to one output filename."""
+    base, ext = os.path.splitext(output)
+    return f"{base}_{interpolation}{ext}"
+
+
 def print_summary(filepath):
     """Print a concise summary of what can be replotted from one slice-data file."""
     summary = list_available_slices(filepath)
@@ -85,7 +94,7 @@ def render_saved_slice(
     dpi,
     figure_size,
 ):
-    """Render one saved slice plane to disk and/or screen."""
+    """Render one saved slice plane to disk and/or screen with multiple interpolation styles."""
     saved = load_saved_slice(slice_file, field_name, slice_tag)
     values = np.asarray(saved["values"], dtype=np.float64).copy()
     values[np.abs(values) < 1.0e-12] = 0.0
@@ -97,51 +106,53 @@ def render_saved_slice(
     extent = plane_extent_from_arrays(horizontal_coords, vertical_coords)
     output_path = output or default_output_name(slice_file, field_name, slice_tag, output_format)
 
-    with plt.rc_context(_plot_style()):
-        fig, ax = plt.subplots(figsize=(figure_size, figure_size))
-        image = ax.imshow(
-            values,
-            origin="lower",
-            extent=extent,
-            cmap=cmap,
-            interpolation="nearest",
-            aspect="equal",
-            vmin=vmin,
-            vmax=vmax,
+    tick_values = np.linspace(float(np.min(values)), float(np.max(values)), 8)
+    if vmin is not None or vmax is not None:
+        tick_values = np.linspace(
+            float(np.min(values) if vmin is None else vmin),
+            float(np.max(values) if vmax is None else vmax),
+            8,
         )
-        ax.set_box_aspect(1)
-        axis_label_map = {"x": r"$x$", "y": r"$y$", "z": r"$z$"}
-        ax.set_xlabel(axis_label_map[str(attrs["horizontal_axis"])], fontsize=22)
-        ax.set_ylabel(axis_label_map[str(attrs["vertical_axis"])], fontsize=22)
-        if width is not None:
-            x0, x1, y0, y1 = extent
-            xmid = 0.5 * (x0 + x1)
-            ymid = 0.5 * (y0 + y1)
-            half = 0.5 * float(width)
-            ax.set_xlim(xmid - half, xmid + half)
-            ax.set_ylim(ymid - half, ymid + half)
+    if np.allclose(tick_values[0], tick_values[-1]):
+        tick_values = np.array([tick_values[0]])
 
-        tick_values = np.linspace(float(np.min(values)), float(np.max(values)), 8)
-        if vmin is not None or vmax is not None:
-            tick_values = np.linspace(
-                float(np.min(image.get_array()) if vmin is None else vmin),
-                float(np.max(image.get_array()) if vmax is None else vmax),
-                8,
+    for interpolation in DEFAULT_INTERPOLATIONS:
+        interpolated_output = interpolation_output_path(output_path, interpolation)
+        with plt.rc_context(_plot_style()):
+            fig, ax = plt.subplots(figsize=(figure_size, figure_size))
+            image = ax.imshow(
+                values,
+                origin="lower",
+                extent=extent,
+                cmap=cmap,
+                interpolation=interpolation,
+                aspect="equal",
+                vmin=vmin,
+                vmax=vmax,
             )
-        if np.allclose(tick_values[0], tick_values[-1]):
-            tick_values = np.array([tick_values[0]])
-        colorbar = fig.colorbar(image, ax=ax, label=str(attrs["plot_label"]), ticks=tick_values)
-        colorbar.ax.tick_params(labelsize=18)
-        colorbar.ax.set_yticklabels(format_colorbar_ticklabels(tick_values))
-        colorbar.set_label(str(attrs["plot_label"]), size=22)
-        fig.tight_layout()
+            ax.set_box_aspect(1)
+            axis_label_map = {"x": r"$x$", "y": r"$y$", "z": r"$z$"}
+            ax.set_xlabel(axis_label_map[str(attrs["horizontal_axis"])], fontsize=22)
+            ax.set_ylabel(axis_label_map[str(attrs["vertical_axis"])], fontsize=22)
+            if width is not None:
+                x0, x1, y0, y1 = extent
+                xmid = 0.5 * (x0 + x1)
+                ymid = 0.5 * (y0 + y1)
+                half = 0.5 * float(width)
+                ax.set_xlim(xmid - half, xmid + half)
+                ax.set_ylim(ymid - half, ymid + half)
 
-        if output_path:
-            fig.savefig(output_path, dpi=dpi)
-            print(f"Saved: {output_path}")
-        if plot:
-            plt.show()
-        plt.close(fig)
+            colorbar = fig.colorbar(image, ax=ax, label=str(attrs["plot_label"]), ticks=tick_values)
+            colorbar.ax.tick_params(labelsize=18)
+            colorbar.ax.set_yticklabels(format_colorbar_ticklabels(tick_values))
+            colorbar.set_label(str(attrs["plot_label"]), size=22)
+            fig.tight_layout()
+
+            fig.savefig(interpolated_output, dpi=dpi)
+            print(f"Saved: {interpolated_output}")
+            if plot:
+                plt.show()
+            plt.close(fig)
 
 
 def print_saved_slice_metadata(slice_file, field_name, slice_tag):
