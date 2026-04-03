@@ -130,10 +130,14 @@ Examples:
 
             if args.scalar_file:
                 scalar_paths = [
-                    resolve_existing_path(scalar_path, preferred_extensions=(".txt",))
+                    resolve_existing_path(scalar_path)
                     for scalar_path in args.scalar_file
                 ]
-                added_scalar_fields = converter.append_scalar_fields_to_h5(scalar_paths, prepared_path)
+                added_scalar_fields = converter.append_scalar_fields_to_h5(
+                    scalar_paths,
+                    prepared_path,
+                    create_scalar_h5=True,
+                )
                 if rank == 0 and added_scalar_fields:
                     print("Added scalar field datasets:")
                     for field_name in added_scalar_fields:

@@ -213,6 +213,12 @@ Main.py command patterns:
       --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt \
       --scalar-file pressure_sampled_data_uniform_interpolated_cycle_0.txt
 
+  Append three scalar fields in one run:
+    mpirun -n 4 python main.py your_velocity_data.h5 \
+      --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt \
+      --scalar-file pressure_sampled_data_uniform_interpolated_cycle_0.txt \
+      --scalar-file temperature_sampled_data_uniform_interpolated_cycle_0.txt
+
   Append scalars and render only selected outputs:
     mpirun -n 4 python main.py your_velocity_data.h5 \
       --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt \
@@ -225,7 +231,8 @@ What main.py now does:
   3. If the .h5 input is a Dedalus field-output file with /tasks/u, it imports the latest
      saved write into one structured FFT-ready snapshot named <input>_writeXXXXX.h5.
   4. Optionally appends one or more scalar sampled-data TXT files into /fields/<scalar_name>
-     of the structured HDF5.
+     of the structured HDF5, and also writes one standalone scalar .h5 next to
+     each scalar .txt input.
   5. Runs the FFT/spectra workflow on the resulting HDF5.
   6. Writes one or more slice PDFs after the FFT step.
 
@@ -275,12 +282,49 @@ The combined slice HDF5 stores:
 This lets you replot slices later without recomputing the FFT/vorticity workflow.
 
 Optional scalar field inputs:
-  - pass one or more sampled-data scalar TXT files to main.py with:
+  - pass one or more sampled-data scalar files to main.py by repeating
+    --scalar-file once per scalar input; each scalar path may be either .txt or .h5:
       --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt
       --scalar-file pressure_sampled_data_uniform_interpolated_cycle_0.txt
+      --scalar-file temperature_sampled_data_uniform_interpolated_cycle_0.txt
+  - the same alternate-extension fallback is used as for the primary input:
+    if foo.txt is requested but only foo.h5 exists, it will use foo.h5, and vice versa
   - the scalar dataset names are parsed from the "Sampled Data, <name>" header line
   - each scalar is appended to /fields/<scalar_name> in the structured HDF5
+  - if a scalar input is TXT, it is also converted to its own standalone HDF5
+    file with the same basename, for example:
+      density_sampled_data_uniform_interpolated_cycle_0.txt
+      -> density_sampled_data_uniform_interpolated_cycle_0.h5
+  - after appending, you can request those scalar names directly with --slice-field,
+    for example:
+      --slice-field density
+      --slice-field pressure
+      --slice-field temperature
   - the same default slices are then written for velocity, vorticity, and all appended scalars
+  - current restriction: when using --scalar-file, main.py expects one primary
+    velocity input file per run
+
+Multiple scalar files example:
+
+  mpirun -n 4 python main.py velocity_sampled_data_uniform_interpolated_cycle_0.txt \
+    --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt \
+    --scalar-file pressure_sampled_data_uniform_interpolated_cycle_0.txt \
+    --scalar-file temperature_sampled_data_uniform_interpolated_cycle_0.txt
+
+This run will:
+  - convert the primary velocity TXT to its structured HDF5 when needed
+  - convert each scalar TXT to its own standalone scalar HDF5 when needed
+  - append each scalar field into the primary structured HDF5 before slicing
+
+Multiple scalar files with selected outputs only:
+
+  mpirun -n 4 python main.py velocity_sampled_data_uniform_interpolated_cycle_0.txt \
+    --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt \
+    --scalar-file pressure_sampled_data_uniform_interpolated_cycle_0.txt \
+    --scalar-file temperature_sampled_data_uniform_interpolated_cycle_0.txt \
+    --slice-field velocity_magnitude \
+    --slice-field density \
+    --slice-field temperature
 
 Important:
   tools/convert_txt_to_hdf5.py deletes the original .txt after a successful TXT -> HDF5

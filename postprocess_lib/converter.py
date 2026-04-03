@@ -64,6 +64,19 @@ def is_structured_velocity_hdf5(h5_file):
     )
 
 
+def is_structured_scalar_hdf5(h5_file):
+    """Return True for the standalone structured scalar HDF5 schema."""
+    if "grid" not in h5_file or "fields" not in h5_file:
+        return False
+    if "x" not in h5_file["grid"] or "y" not in h5_file["grid"] or "z" not in h5_file["grid"]:
+        return False
+    field_names = [name for name, value in h5_file["fields"].items() if isinstance(value, h5py.Dataset)]
+    if len(field_names) != 1:
+        return False
+    field_name = field_names[0]
+    return field_name not in {"vx", "vy", "vz"}
+
+
 def is_dedalus_field_output_hdf5(h5_file):
     """Return True for Dedalus field-output files with vector velocity tasks."""
     if "tasks" not in h5_file or "scales" not in h5_file:
@@ -333,9 +346,38 @@ def read_structured_grid(path):
     return x_unique, y_unique, z_unique
 
 
-def validate_matching_structured_grid(txt_path, h5_path, txt_grid, h5_grid):
-    """Ensure an auxiliary sampled-data TXT file matches the structured HDF5 grid."""
-    txt_x, txt_y, txt_z = txt_grid
+def read_scalar_structured_h5_metadata(path):
+    """Read one standalone structured scalar HDF5 file and broadcast its metadata."""
+    field_name = display_name = None
+    x_unique = y_unique = z_unique = None
+    total_rows = 0
+
+    if rank == 0:
+        with h5py.File(path, "r") as hf:
+            if not is_structured_scalar_hdf5(hf):
+                raise ValueError(f"{path} is not a standalone structured scalar HDF5 file.")
+            field_name = next(iter(hf["fields"].keys()))
+            dataset = hf["fields"][field_name]
+            display_name = dataset.attrs.get("display_name", hf.attrs.get("display_name", field_name))
+            if isinstance(display_name, bytes):
+                display_name = display_name.decode("utf-8")
+            x_unique = np.asarray(hf["grid"]["x"][:], dtype=np.float64)
+            y_unique = np.asarray(hf["grid"]["y"][:], dtype=np.float64)
+            z_unique = np.asarray(hf["grid"]["z"][:], dtype=np.float64)
+            total_rows = int(np.prod(dataset.shape))
+
+    field_name = comm.bcast(field_name, root=0)
+    display_name = comm.bcast(display_name, root=0)
+    x_unique = comm.bcast(x_unique, root=0)
+    y_unique = comm.bcast(y_unique, root=0)
+    z_unique = comm.bcast(z_unique, root=0)
+    total_rows = comm.bcast(total_rows, root=0)
+    return field_name, display_name, x_unique, y_unique, z_unique, total_rows
+
+
+def validate_matching_structured_grid(source_path, h5_path, source_grid, h5_grid):
+    """Ensure an auxiliary structured scalar input matches the main structured HDF5 grid."""
+    txt_x, txt_y, txt_z = source_grid
     h5_x, h5_y, h5_z = h5_grid
 
     for axis_name, txt_axis, h5_axis in (
@@ -345,7 +387,7 @@ def validate_matching_structured_grid(txt_path, h5_path, txt_grid, h5_grid):
     ):
         if len(txt_axis) != len(h5_axis) or not np.allclose(txt_axis, h5_axis, rtol=0.0, atol=1.0e-10):
             raise ValueError(
-                f"Scalar field grid from {txt_path} does not match {h5_path} along axis '{axis_name}'."
+                f"Scalar field grid from {source_path} does not match {h5_path} along axis '{axis_name}'."
             )
 
 
@@ -750,7 +792,7 @@ def write_scalar_field_to_h5(
     display_name,
     local_x_bounds,
     local_scalar,
-    source_txt_path,
+    source_path,
 ):
     """Append one scalar field dataset to an existing structured HDF5 file."""
     x_unique, y_unique, z_unique = read_structured_grid(h5_path)
@@ -786,7 +828,114 @@ def write_scalar_field_to_h5(
             dataset.attrs["field_kind"] = "scalar"
             dataset.attrs["display_name"] = display_name
             dataset.attrs["plot_label"] = display_name
+            dataset.attrs["source_path"] = os.path.abspath(source_path)
+            if str(source_path).lower().endswith(".txt"):
+                dataset.attrs["source_txt"] = os.path.abspath(source_path)
+            elif str(source_path).lower().endswith(".h5"):
+                dataset.attrs["source_h5"] = os.path.abspath(source_path)
+
+
+def write_scalar_structured_h5(
+    h5_path,
+    x_unique,
+    y_unique,
+    z_unique,
+    field_name,
+    display_name,
+    local_x_bounds,
+    local_scalar,
+    header_lines,
+    source_txt_path,
+):
+    """Write one scalar sampled-data TXT file to its own structured HDF5 file."""
+    global_shape = (len(x_unique), len(y_unique), len(z_unique))
+    x_start, x_stop = local_x_bounds
+
+    if rank == 0 and os.path.exists(h5_path):
+        os.remove(h5_path)
+    comm.Barrier()
+
+    if h5py.get_config().mpi:
+        with h5py.File(h5_path, "w", driver="mpio", comm=comm) as hf:
+            fields = hf.create_group("fields")
+            scalar_dset = fields.create_dataset(field_name, shape=global_shape, dtype="float64")
+            if x_stop > x_start:
+                scalar_dset[slice(x_start, x_stop), :, :] = local_scalar
+    else:
+        gathered = comm.gather((x_start, x_stop, local_scalar), root=0)
+        if rank == 0:
+            with h5py.File(h5_path, "w") as hf:
+                fields = hf.create_group("fields")
+                scalar_dset = fields.create_dataset(field_name, shape=global_shape, dtype="float64")
+                for slab_start, slab_stop, slab_values in gathered:
+                    if slab_stop > slab_start:
+                        scalar_dset[slice(slab_start, slab_stop), :, :] = slab_values
+
+    comm.Barrier()
+
+    if rank == 0:
+        step_number, time_value = parse_header_metadata(header_lines)
+        with h5py.File(h5_path, "a") as hf:
+            grid = hf.create_group("grid")
+            grid.create_dataset("x", data=x_unique)
+            grid.create_dataset("y", data=y_unique)
+            grid.create_dataset("z", data=z_unique)
+
+            dt = h5py.string_dtype(encoding="utf-8")
+            hf.create_dataset(
+                "header",
+                data=np.array([str(line) for line in header_lines], dtype=object),
+                dtype=dt,
+            )
+
+            dataset = hf["fields"][field_name]
+            dataset.attrs["field_kind"] = "scalar"
+            dataset.attrs["display_name"] = display_name
+            dataset.attrs["plot_label"] = display_name
             dataset.attrs["source_txt"] = os.path.abspath(source_txt_path)
+
+            hf.attrs["schema"] = "structured_scalar_v1"
+            hf.attrs["periodic_duplicate_last"] = True
+            hf.attrs["Nx"] = int(global_shape[0])
+            hf.attrs["Ny"] = int(global_shape[1])
+            hf.attrs["Nz"] = int(global_shape[2])
+            hf.attrs["fft_nx"] = int(max(global_shape[0] - 1, 1))
+            hf.attrs["fft_ny"] = int(max(global_shape[1] - 1, 1))
+            hf.attrs["fft_nz"] = int(max(global_shape[2] - 1, 1))
+            hf.attrs["dx"] = float(x_unique[1] - x_unique[0]) if len(x_unique) > 1 else 1.0
+            hf.attrs["dy"] = float(y_unique[1] - y_unique[0]) if len(y_unique) > 1 else 1.0
+            hf.attrs["dz"] = float(z_unique[1] - z_unique[0]) if len(z_unique) > 1 else 1.0
+            hf.attrs["xmin"] = float(x_unique[0])
+            hf.attrs["xmax"] = float(x_unique[-1])
+            hf.attrs["ymin"] = float(y_unique[0])
+            hf.attrs["ymax"] = float(y_unique[-1])
+            hf.attrs["zmin"] = float(z_unique[0])
+            hf.attrs["zmax"] = float(z_unique[-1])
+            hf.attrs["step"] = step_number
+            hf.attrs["time"] = float(time_value)
+            hf.attrs["source_txt"] = os.path.abspath(source_txt_path)
+            hf.attrs["field_name"] = field_name
+            hf.attrs["display_name"] = display_name
+
+
+def scalar_h5_output_path(txt_path):
+    """Return the standalone HDF5 output path for one scalar TXT file."""
+    base, _ = os.path.splitext(txt_path)
+    return base + ".h5"
+
+
+def read_scalar_field_xslab_from_h5(h5_path, field_name, grid_shape):
+    """Read one rank-local x-slab from a standalone structured scalar HDF5 file."""
+    nx, ny, nz = grid_shape
+    x_start, x_stop = split_axis(nx, size)[rank]
+    local_nx = x_stop - x_start
+    local_scalar = np.zeros((local_nx, ny, nz), dtype=np.float64)
+
+    if local_nx > 0:
+        with open_h5_for_independent_read(h5_path) as hf:
+            local_scalar[...] = np.asarray(hf["fields"][field_name][slice(x_start, x_stop), :, :], dtype=np.float64)
+
+    return (x_start, x_stop), local_scalar
 
 
 def convert_txt_to_h5_parallel(txt_path, h5_path):
@@ -856,7 +1005,7 @@ def convert_txt_to_h5_parallel(txt_path, h5_path):
     return tke, total_rows
 
 
-def append_scalar_txt_to_h5_parallel(txt_path, h5_path):
+def append_scalar_txt_to_h5_parallel(txt_path, h5_path, scalar_h5_path=None):
     """Append one scalar sampled-data TXT file into an existing structured HDF5 file."""
     exists = comm.bcast(os.path.exists(txt_path) if rank == 0 else False, root=0)
     if not exists:
@@ -939,6 +1088,25 @@ def append_scalar_txt_to_h5_parallel(txt_path, h5_path):
         txt_path,
     )
 
+    if scalar_h5_path is not None:
+        if rank == 0:
+            if h5py.get_config().mpi:
+                print(f"  Writing standalone scalar HDF5: {scalar_h5_path}")
+            else:
+                print(f"  Writing standalone scalar HDF5 on rank 0: {scalar_h5_path}")
+        write_scalar_structured_h5(
+            scalar_h5_path,
+            txt_x,
+            txt_y,
+            txt_z,
+            field_name,
+            display_name,
+            local_x_bounds,
+            local_scalar,
+            header_lines,
+            txt_path,
+        )
+
     total_written_rows = comm.reduce(local_rows, op=MPI.SUM, root=0)
     if rank == 0:
         print(f"  Scalar append complete. Total rows: {total_written_rows}")
@@ -951,11 +1119,75 @@ def append_scalar_txt_to_h5_parallel(txt_path, h5_path):
     return field_name
 
 
-def append_scalar_fields_to_h5(txt_paths, h5_path):
-    """Append one or more scalar sampled-data TXT files into an existing structured HDF5 file."""
+def append_scalar_h5_to_h5_parallel(scalar_h5_path, h5_path):
+    """Append one standalone structured scalar HDF5 file into an existing structured HDF5 file."""
+    exists = comm.bcast(os.path.exists(scalar_h5_path) if rank == 0 else False, root=0)
+    if not exists:
+        raise FileNotFoundError(scalar_h5_path)
+
+    if rank == 0:
+        print(f"\nAdding scalar field: {scalar_h5_path}")
+        print("  Reading standalone structured scalar HDF5 metadata...")
+
+    field_name, display_name, scalar_x, scalar_y, scalar_z, total_rows = read_scalar_structured_h5_metadata(
+        scalar_h5_path
+    )
+    if field_name in {"vx", "vy", "vz"}:
+        raise ValueError(f"Scalar dataset name '{field_name}' conflicts with required velocity fields.")
+
+    h5_x, h5_y, h5_z = read_structured_grid(h5_path)
+    validate_matching_structured_grid(scalar_h5_path, h5_path, (scalar_x, scalar_y, scalar_z), (h5_x, h5_y, h5_z))
+
+    if rank == 0:
+        print(f"  Parsed scalar name: {display_name} -> dataset '{field_name}'")
+        print(f"  {total_rows} rows | {size} MPI ranks")
+        print("  Reading scalar HDF5 x-slabs directly...")
+    local_x_bounds, local_scalar = read_scalar_field_xslab_from_h5(
+        scalar_h5_path,
+        field_name,
+        (len(scalar_x), len(scalar_y), len(scalar_z)),
+    )
+    local_rows = int(local_scalar.size)
+
+    if rank == 0:
+        if h5py.get_config().mpi:
+            print("  Writing scalar field into structured HDF5 in parallel...")
+        else:
+            print("  h5py MPI support is unavailable; falling back to serial scalar HDF5 assembly on rank 0...")
+
+    write_scalar_field_to_h5(
+        h5_path,
+        field_name,
+        display_name,
+        local_x_bounds,
+        local_scalar,
+        scalar_h5_path,
+    )
+
+    total_written_rows = comm.reduce(local_rows, op=MPI.SUM, root=0)
+    if rank == 0:
+        print(f"  Scalar append complete. Total rows: {total_written_rows}")
+    total_written_rows = comm.bcast(total_written_rows, root=0)
+    if total_written_rows != total_rows:
+        raise ValueError(
+            f"Scalar field row count mismatch for {scalar_h5_path}: expected {total_rows}, wrote {total_written_rows}."
+        )
+
+    return field_name
+
+
+def append_scalar_fields_to_h5(paths, h5_path, create_scalar_h5=False):
+    """Append one or more scalar TXT/HDF5 inputs into an existing structured HDF5 file."""
     added_fields = []
-    for txt_path in txt_paths:
-        added_fields.append(append_scalar_txt_to_h5_parallel(txt_path, h5_path))
+    for path in paths:
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".txt":
+            scalar_h5_path = scalar_h5_output_path(path) if create_scalar_h5 else None
+            added_fields.append(append_scalar_txt_to_h5_parallel(path, h5_path, scalar_h5_path=scalar_h5_path))
+        elif ext == ".h5":
+            added_fields.append(append_scalar_h5_to_h5_parallel(path, h5_path))
+        else:
+            raise ValueError(f"Unsupported scalar input extension '{ext}'. Expected .txt or .h5.")
     return added_fields
 
 
