@@ -13,11 +13,12 @@ import numpy as np
 from mpi4py import MPI
 
 from postprocess_fft.app import analyze_file_parallel
+from postprocess_lib.prepare import resolve_existing_path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_CASES = {
-    "sample_txt": REPO_ROOT / "data" / "SampledData0.txt",
+    "sample_txt": Path(resolve_existing_path(str(REPO_ROOT / "data" / "SampledData0.txt"))),
     "dedalus_h5": (
         REPO_ROOT
         / "data"
@@ -27,6 +28,7 @@ DATA_CASES = {
     ),
 }
 SUMMARY_LINES: list[str] = []
+REPORT_ONLY_TOLERANCE_TEXT = "report-only comparison; no pass/fail relative tolerance"
 
 
 def relative_l2_error(values: np.ndarray, reference: np.ndarray) -> float:
@@ -115,6 +117,9 @@ class TestKESpectraComparison(unittest.TestCase):
 
         SUMMARY_LINES.extend(
             [
+                "Tolerance policy",
+                f"  Full-spectrum comparison:       {REPORT_ONLY_TOLERANCE_TEXT}",
+                f"  Integrated totals comparison:   {REPORT_ONLY_TOLERANCE_TEXT}",
                 "Full-spectrum comparison",
                 f"  Common spectrum length:         {common_len:d}",
                 f"  Relative L2 error in E_total:   {etot_rel_l2:.16e}",

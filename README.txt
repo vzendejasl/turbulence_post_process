@@ -103,6 +103,79 @@ Run:
   mpirun -n 4 python tools/convert_txt_to_hdf5.py your_data.txt
   mpirun -n 4 python tools/visualize_velocity_yt.py your_data.h5 --slice z:center --field vx
 
+Tests:
+
+  Compare spectra totals and full spectra between the sample TXT case and the
+  reduced Dedalus HDF5 case:
+    python -m tests.test_ke_spectra_compare
+
+  Run the same comparison under MPI and print only one summary from rank 0:
+    mpirun -n 4 python -m tests.test_ke_spectra_compare
+
+  Check spectra rank consistency for both inputs across 1, 2, and 4 MPI ranks:
+    python -m tests.test_rank_consistency
+
+  The rank-consistency test is a serial launcher. It starts:
+    mpirun -n 1 python -m tests.rank_consistency_worker ...
+    mpirun -n 2 python -m tests.rank_consistency_worker ...
+    mpirun -n 4 python -m tests.rank_consistency_worker ...
+
+  Both tests compare spectra outputs only. They do not compare raw 3D fields
+  directly, which avoids confusion from periodic duplicate endpoints in the
+  sampled data.
+
+
+--------------------------------------------------------------------------------
+Testing
+--------------------------------------------------------------------------------
+
+Activate the environment first:
+
+  source /home/vzendejasl/anaconda3/etc/profile.d/conda.sh
+  conda activate heffte-py-linux
+
+Run the full test suite:
+
+  python -m unittest discover -s tests -v
+
+Run the TXT-vs-Dedalus spectra comparison test by itself:
+
+  python -m tests.test_ke_spectra_compare
+
+Optional MPI run for that same comparison test:
+
+  mpirun -n 4 python -m tests.test_ke_spectra_compare
+
+Run the rank-consistency test by itself:
+
+  python -m tests.test_rank_consistency
+
+What the tests do:
+
+  tests.test_ke_spectra_compare
+    - compares the sample-data case against the reduced Dedalus case
+    - uses saved spectra outputs only
+    - sums E_total to get total KE
+    - sums Enstrophy to get total enstrophy
+    - also reports full-spectrum relative L2 errors for E_total(k) and
+      Enstrophy(k)
+    - this is report-only; it does not enforce a pass/fail relative tolerance
+
+  tests.test_rank_consistency
+    - checks the same spectra workflow across 1, 2, and 4 MPI ranks
+    - runs for both the sample fixture and the reduced Dedalus fixture
+    - compares saved spectra outputs only
+    - enforces:
+        relative L2 tolerance = 1.0e-12
+        relative sum tolerance = 1.0e-12
+
+Important:
+  - Run tests from the repo root.
+  - Do not wrap `python -m unittest discover -s tests -v` in `mpirun`.
+  - `tests.test_rank_consistency` launches its own 1/2/4-rank runs internally.
+  - If `data/SampledData0.txt` is not present, the tests automatically fall back
+    to `data/SampledData0.h5`.
+
 Integrated pipeline:
 
   mpirun -n 4 python main.py your_data.txt
