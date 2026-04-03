@@ -41,13 +41,49 @@ def print_summary(filepath):
         print(f"  {field_name}: {', '.join(slice_tags)}")
 
 
-def default_output_name(slice_file, field_name, slice_tag, output_format):
+def output_stem(source_path, field_name):
+    """Build a clean default filename stem with the plotted field name once in front."""
+    base = os.path.splitext(os.path.basename(source_path))[0]
+    marker = "_sampled_data"
+    if marker in base:
+        _, suffix = base.split(marker, 1)
+        return f"{field_name}{marker}{suffix}"
+    if base == field_name or base.startswith(f"{field_name}_"):
+        return base
+    if base.endswith(f"_{field_name}"):
+        return base[: -(len(field_name) + 1)]
+    return f"{field_name}_{base}"
+
+
+def output_source_path(slice_file, field_name, saved_attrs):
+    """Return the path whose stem should drive default replot naming for one field."""
+    source_h5 = str(saved_attrs.get("source_h5", "")).strip()
+    source_file = str(saved_attrs.get("source_file", "")).strip()
+    field_family = str(saved_attrs.get("field_family", "")).strip()
+    source_dataset = str(saved_attrs.get("source_dataset", field_name)).strip()
+
+    if field_family == "scalar" and source_h5 and os.path.exists(source_h5):
+        with h5py.File(source_h5, "r") as hf:
+            if "fields" in hf and source_dataset in hf["fields"]:
+                dataset = hf["fields"][source_dataset]
+                for attr_name in ("source_path", "source_h5", "source_txt"):
+                    candidate = dataset.attrs.get(attr_name)
+                    if candidate:
+                        return str(candidate)
+
+    for candidate in (source_file, source_h5):
+        if candidate:
+            return candidate
+    return slice_file
+
+
+def default_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs):
     """Return the default output path for one replotted saved slice."""
     directory = os.path.dirname(os.path.abspath(slice_file))
     output_dir = os.path.join(directory, "slice_replots")
     os.makedirs(output_dir, exist_ok=True)
-    base = os.path.splitext(os.path.basename(slice_file))[0]
-    return os.path.join(output_dir, f"{base}_{slice_tag}_{field_name}.{output_format}")
+    base = output_stem(output_source_path(slice_file, field_name, saved_attrs), field_name)
+    return os.path.join(output_dir, f"{base}_{slice_tag}.{output_format}")
 
 
 def build_yt_slice_dataset(slice_file, field_name, slice_tag):
@@ -120,7 +156,7 @@ def render_saved_slice(
     values = np.round(values, decimals=10)
 
     attrs = saved["attrs"]
-    output_path = output or default_output_name(slice_file, field_name, slice_tag, output_format)
+    output_path = output or default_output_name(slice_file, field_name, slice_tag, output_format, attrs)
     zmin = float(np.min(values) if vmin is None else vmin)
     zmax = float(np.max(values) if vmax is None else vmax)
 
@@ -176,7 +212,7 @@ def render_saved_slice(
 #     horizontal_coords = saved["coord_horizontal"]
 #     vertical_coords = saved["coord_vertical"]
 #     extent = plane_extent_from_arrays(horizontal_coords, vertical_coords)
-#     output_path = output or default_output_name(slice_file, field_name, slice_tag, output_format)
+#     output_path = output or default_output_name(slice_file, field_name, slice_tag, output_format, saved["attrs"])
 #     fig, ax = plt.subplots(figsize=(figure_size, figure_size))
 #     image = ax.imshow(
 #         values,
