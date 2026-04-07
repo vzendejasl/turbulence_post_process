@@ -47,16 +47,11 @@ import os
 import sys
 from pathlib import Path
 
-import h5py
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-
-from postprocess_vis.slice_data import list_available_slices
-from postprocess_vis.slice_data import load_saved_slice
-from postprocess_vis.slice_data import plane_extent_from_arrays
 
 COMPARE_COLORS = ("k", "red", "blue")
 
@@ -66,6 +61,29 @@ def _yt_font_style():
         "family": "serif",
         "size": 18,
     }
+
+
+def _ensure_yt_imported():
+    """Import yt early so cluster library resolution is stable before h5py helpers."""
+    import yt  # noqa: F401
+
+
+def _list_available_slices(filepath):
+    from postprocess_vis.slice_data import list_available_slices
+
+    return list_available_slices(filepath)
+
+
+def _load_saved_slice(filepath, field_name, slice_tag):
+    from postprocess_vis.slice_data import load_saved_slice
+
+    return load_saved_slice(filepath, field_name, slice_tag)
+
+
+def _plane_extent_from_arrays(horizontal_coords, vertical_coords):
+    from postprocess_vis.slice_data import plane_extent_from_arrays
+
+    return plane_extent_from_arrays(horizontal_coords, vertical_coords)
 
 
 def _prepare_plot_values(values):
@@ -232,7 +250,7 @@ def _comparison_label(slice_file, field_name, saved_attrs):
 
 def print_summary(filepath):
     """Print a concise summary of what can be replotted from one slice-data file."""
-    summary = list_available_slices(filepath)
+    summary = _list_available_slices(filepath)
     print(f"Slice file: {os.path.abspath(filepath)}")
     print(f"Source file: {summary['source_file']}")
     print(f"Source HDF5: {summary['source_h5']}")
@@ -269,6 +287,8 @@ def normalization_suffix(normalize):
 
 def output_source_path(slice_file, field_name, saved_attrs):
     """Return the path whose stem should drive default replot naming for one field."""
+    import h5py
+
     source_h5 = str(saved_attrs.get("source_h5", "")).strip()
     source_file = str(saved_attrs.get("source_file", "")).strip()
     field_family = str(saved_attrs.get("field_family", "")).strip()
@@ -351,10 +371,11 @@ def build_comparison_metadata_text(prepared, field_name, slice_tag, normalize, l
 
 def build_yt_slice_dataset(slice_file, field_name, slice_tag, saved=None):
     """Construct a one-cell-thick yt uniform-grid dataset from one saved slice."""
+    import h5py
     import yt
 
     if saved is None:
-        saved = load_saved_slice(slice_file, field_name, slice_tag)
+        saved = _load_saved_slice(slice_file, field_name, slice_tag)
     attrs = saved["attrs"]
     axis = str(attrs["axis"])
     plane_coord = float(attrs["plane_coord"])
@@ -424,7 +445,7 @@ def render_saved_slice_contour_matplotlib(
     """
     import matplotlib.pyplot as plt
 
-    saved = _apply_normalization(load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
+    saved = _apply_normalization(_load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
     attrs = saved["attrs"]
     values = _prepare_plot_values(saved["values"])
     h_coords = np.asarray(saved["coord_horizontal"], dtype=np.float64)
@@ -494,7 +515,7 @@ def render_saved_slice_contour_yt(
     """Render a separate contour plot for one saved slice using yt."""
     import yt
 
-    saved = _apply_normalization(load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
+    saved = _apply_normalization(_load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
     dataset, yt_field, saved = build_yt_slice_dataset(slice_file, field_name, slice_tag, saved=saved)
     values = _prepare_plot_values(saved["values"])
     attrs = saved["attrs"]
@@ -675,7 +696,7 @@ def render_compared_contours(
     reference_axes = None
 
     for slice_file in slice_files:
-        saved = _apply_normalization(load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
+        saved = _apply_normalization(_load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
         attrs = saved["attrs"]
         values = _prepare_plot_values(saved["values"])
         horizontal_coords = np.asarray(saved["coord_horizontal"], dtype=np.float64)
@@ -854,7 +875,7 @@ def render_saved_slice(
     """Render one saved slice plane to disk and/or screen with yt bicubic output."""
     import yt
 
-    saved = _apply_normalization(load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=True)
+    saved = _apply_normalization(_load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=True)
     dataset, yt_field, saved = build_yt_slice_dataset(slice_file, field_name, slice_tag, saved=saved)
     values = _prepare_plot_values(saved["values"])
 
@@ -919,13 +940,13 @@ def render_saved_slice(
 #     dpi,
 #     figure_size,
 # ):
-#     saved = load_saved_slice(slice_file, field_name, slice_tag)
+#     saved = _load_saved_slice(slice_file, field_name, slice_tag)
 #     values = np.asarray(saved["values"], dtype=np.float64).copy()
 #     values[np.abs(values) < 1.0e-12] = 0.0
 #     values = np.round(values, decimals=10)
 #     horizontal_coords = saved["coord_horizontal"]
 #     vertical_coords = saved["coord_vertical"]
-#     extent = plane_extent_from_arrays(horizontal_coords, vertical_coords)
+#     extent = _plane_extent_from_arrays(horizontal_coords, vertical_coords)
 #     output_path = output or default_output_name(slice_file, field_name, slice_tag, output_format, saved["attrs"])
 #     fig, ax = plt.subplots(figsize=(figure_size, figure_size))
 #     image = ax.imshow(
@@ -948,7 +969,7 @@ def render_saved_slice(
 
 def print_saved_slice_metadata(slice_file, field_name, slice_tag):
     """Print metadata for one selected saved slice."""
-    saved = load_saved_slice(slice_file, field_name, slice_tag)
+    saved = _load_saved_slice(slice_file, field_name, slice_tag)
     attrs = saved["attrs"]
     print(f"Selected field: {field_name}")
     print(f"Selected slice: {slice_tag}")
@@ -983,6 +1004,7 @@ def process_slice_file(slice_file, args):
         print_summary(slice_file)
         return
 
+    _ensure_yt_imported()
     print_saved_slice_metadata(slice_file, args.field, args.slice_tag)
 
     if args.yt_info:
