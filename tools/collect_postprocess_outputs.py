@@ -83,6 +83,13 @@ def process_root(root: Path, move: bool) -> int:
         destination_cycle = postprocess_root / cycle_dir.name
         destination_cycle.mkdir(parents=True, exist_ok=True)
 
+        slice_data_dir = cycle_dir / "slice_data"
+        if slice_data_dir.exists():
+            destination_slice_data = destination_cycle / "slice_data"
+            copy_or_move_path(slice_data_dir, destination_slice_data, move)
+            copied_items += 1
+            print(f"  {'Moved' if move else 'Copied'} {slice_data_dir} -> {destination_slice_data}")
+
         slice_plots_dir = cycle_dir / "slice_plots"
         if slice_plots_dir.exists():
             destination_slice_plots = destination_cycle / "slice_plots"
@@ -102,7 +109,7 @@ def process_root(root: Path, move: bool) -> int:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Collect slice_plots and spectra outputs from cycle_* directories into a post_process tree."
+        description="Collect slice_data, slice_plots, and spectra outputs from cycle_* directories into a post_process tree."
     )
     parser.add_argument("roots", nargs="+", help="One or more sampled-data root directories")
     parser.add_argument(
