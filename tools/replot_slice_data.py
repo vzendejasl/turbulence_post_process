@@ -2,6 +2,10 @@
 """Inspect and replot saved 2D slice data from a combined *_slices.h5 file.
 
 Example commands:
+  Notes:
+    --field selects the saved variable to replot.
+    --slice selects which saved plane of that variable to render.
+
   List available fields and slices:
     python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --list
 
@@ -18,7 +22,22 @@ Example commands:
     python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour --contour-values 0.5,1.0,2.0,4.0,8.0
 
   Render normalized vorticity and contour values in normalized units:
-    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --normalize vorticity --contour --contour-values 6.28319,12.5664,25.1327
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --normalize vorticity --contour --contour-values 0.5,1.0,2.0
+
+  Batch-process multiple slice files and save into each file's own slice_replots folder:
+    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour
+
+  Compare overlaid contours from two or three slice files:
+    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 data/run3/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour --compare
+
+  Compare two slice files using fixed contour values:
+    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour --compare --contour-values 0.5,1.0,2.0,4.0
+
+  Compare three slice files using fixed contour values:
+    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 data/run3/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour --compare --contour-values 0.5,1.0,2.0,4.0
+
+  Compare normalized vorticity using fixed normalized contour values:
+    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --normalize vorticity --contour --compare --contour-values 0.5,1.0,2.0
 """
 
 from __future__ import annotations
@@ -38,6 +57,8 @@ if str(REPO_ROOT) not in sys.path:
 from postprocess_vis.slice_data import list_available_slices
 from postprocess_vis.slice_data import load_saved_slice
 from postprocess_vis.slice_data import plane_extent_from_arrays
+
+COMPARE_COLORS = ("k", "red", "blue")
 
 
 def _yt_font_style():
@@ -101,7 +122,7 @@ def _apply_normalization(saved, normalize, print_stats=False):
         U0 = 1.0
         L = 1.0 / (2.0 * np.pi)
         reference_scale = U0 / L
-        normalization_factor = reference_scale
+        normalization_factor = 1.0 / reference_scale
         values = np.round(values_raw * normalization_factor, decimals=10)
         attrs["plot_label"] = _star_plot_label(attrs.get("plot_label", attrs.get("field_name", "")))
         attrs["normalization"] = normalize
@@ -113,7 +134,8 @@ def _apply_normalization(saved, normalize, print_stats=False):
             print(f"  U0 = {U0:.6g}")
             print(f"  L = {L:.6g}")
             print(f"  Reference scale U0/L = {reference_scale:.6g}")
-            print(f"  Normalization uses omega* = omega * (U0/L) = omega * {normalization_factor:.6g}")
+            print("  Units check: omega has units 1/T and U0/L has units 1/T.")
+            print(f"  Normalization uses omega* = omega / (U0/L) = omega * {normalization_factor:.6g}")
             print(f"Normalized data min: {float(np.min(values)):.6g}")
             print(f"Normalized data max: {float(np.max(values)):.6g}")
 
@@ -202,6 +224,12 @@ def _build_contour_grid(horizontal_coords, vertical_coords, values, target_size=
     return X, Y, dense_values
 
 
+def _comparison_label(slice_file, field_name, saved_attrs):
+    """Return a short label for one compared dataset."""
+    source = output_source_path(slice_file, field_name, saved_attrs)
+    return os.path.splitext(os.path.basename(source))[0]
+
+
 def print_summary(filepath):
     """Print a concise summary of what can be replotted from one slice-data file."""
     summary = list_available_slices(filepath)
@@ -261,13 +289,64 @@ def output_source_path(slice_file, field_name, saved_attrs):
     return slice_file
 
 
+def default_output_directory(slice_file):
+    """Return the directory where replots should be written."""
+    slice_path = Path(slice_file).resolve()
+    if slice_path.parent.name == "slice_data":
+        output_dir = slice_path.parent.parent / "slice_plots" / "slice_replots"
+    else:
+        output_dir = slice_path.parent / "slice_replots"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return str(output_dir)
+
+
 def default_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none"):
     """Return the default output path for one replotted saved slice."""
-    directory = os.path.dirname(os.path.abspath(slice_file))
-    output_dir = os.path.join(directory, "slice_replots")
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = default_output_directory(slice_file)
     base = output_stem(output_source_path(slice_file, field_name, saved_attrs), field_name) + normalization_suffix(normalize)
     return os.path.join(output_dir, f"{base}_{slice_tag}.{output_format}")
+
+
+def default_comparison_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none"):
+    """Return the default output path for one copied comparison plot."""
+    return default_output_name(
+        slice_file,
+        field_name,
+        f"{slice_tag}_contour_compare",
+        output_format,
+        saved_attrs,
+        normalize=normalize,
+    )
+
+
+def default_comparison_metadata_name(slice_file, field_name, slice_tag, saved_attrs, normalize="none"):
+    """Return the default output path for one copied comparison metadata file."""
+    output_path = default_comparison_output_name(
+        slice_file,
+        field_name,
+        slice_tag,
+        "pdf",
+        saved_attrs,
+        normalize=normalize,
+    )
+    stem, _ = os.path.splitext(output_path)
+    return f"{stem}_metadata.txt"
+
+
+def build_comparison_metadata_text(prepared, field_name, slice_tag, normalize, levels):
+    """Return metadata text describing one comparison contour plot."""
+    lines = [
+        f"Field: {field_name}",
+        f"Slice: {slice_tag}",
+        f"Normalization: {normalize}",
+        "Contour colors:",
+    ]
+    for index, item in enumerate(prepared):
+        color = item["compare_color"]
+        lines.append(f"  {color}: {os.path.abspath(item['slice_file'])}")
+    lines.append("Contour levels:")
+    lines.append("  " + ", ".join(f"{float(level):.6g}" for level in np.asarray(levels, dtype=np.float64)))
+    return "\n".join(lines) + "\n"
 
 
 def build_yt_slice_dataset(slice_file, field_name, slice_tag, saved=None):
@@ -559,6 +638,204 @@ def render_saved_slice_contour(
         )
 
 
+def render_compared_contours(
+    slice_files,
+    field_name,
+    slice_tag,
+    cmap,
+    width,
+    vmin,
+    vmax,
+    output_format,
+    plot,
+    dpi,
+    figure_size,
+    contour_levels,
+    contour_values,
+    contour_color,
+    normalize,
+    contour_filled=False,
+    output_paths=None,
+    metadata_paths=None,
+):
+    """Render one overlaid comparison contour plot for up to three slice files."""
+    import yt
+
+    if len(slice_files) < 2:
+        raise ValueError("--compare requires at least two slice files.")
+    if len(slice_files) > len(COMPARE_COLORS):
+        raise ValueError("--compare supports at most three slice files.")
+
+    if contour_filled:
+        print("Compare mode ignores --contour-filled and renders line contours only.")
+
+    prepared = []
+    reference_horizontal = None
+    reference_vertical = None
+    reference_axes = None
+
+    for slice_file in slice_files:
+        saved = _apply_normalization(load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
+        attrs = saved["attrs"]
+        values = _prepare_plot_values(saved["values"])
+        horizontal_coords = np.asarray(saved["coord_horizontal"], dtype=np.float64)
+        vertical_coords = np.asarray(saved["coord_vertical"], dtype=np.float64)
+
+        if reference_horizontal is None:
+            reference_horizontal = horizontal_coords
+            reference_vertical = vertical_coords
+            reference_axes = (
+                str(attrs.get("horizontal_axis", "h")),
+                str(attrs.get("vertical_axis", "v")),
+            )
+        else:
+            if (
+                horizontal_coords.shape != reference_horizontal.shape
+                or vertical_coords.shape != reference_vertical.shape
+                or not np.allclose(horizontal_coords, reference_horizontal)
+                or not np.allclose(vertical_coords, reference_vertical)
+            ):
+                raise ValueError("All compared slice files must share the same plotting coordinates.")
+            current_axes = (
+                str(attrs.get("horizontal_axis", "h")),
+                str(attrs.get("vertical_axis", "v")),
+            )
+            if current_axes != reference_axes:
+                raise ValueError("All compared slice files must share the same displayed axes.")
+
+        grid_x, grid_y, contour_field = _build_contour_grid(horizontal_coords, vertical_coords, values)
+        prepared.append(
+            {
+                "slice_file": slice_file,
+                "attrs": attrs,
+                "saved": saved,
+                "values": values,
+                "horizontal_coords": horizontal_coords,
+                "vertical_coords": vertical_coords,
+                "grid_x": grid_x,
+                "grid_y": grid_y,
+                "contour_field": contour_field,
+                "label": _comparison_label(slice_file, field_name, attrs),
+            }
+        )
+
+    if contour_values is not None:
+        levels = _parse_contour_values(contour_values)
+    else:
+        global_min = min(float(np.min(item["values"])) for item in prepared)
+        global_max = max(float(np.max(item["values"])) for item in prepared)
+        levels = _resolve_contour_levels(
+            np.array([global_min, global_max], dtype=np.float64),
+            vmin,
+            vmax,
+            contour_levels,
+            None,
+        )
+
+    base_item = prepared[0]
+    base_dataset, base_yt_field, _ = build_yt_slice_dataset(
+        base_item["slice_file"],
+        field_name,
+        slice_tag,
+        saved=base_item["saved"],
+    )
+    base_min = float(np.min(base_item["values"]))
+    base_max = float(np.max(base_item["values"]))
+    zmin = float(base_min if vmin is None else vmin)
+    zmax = float(base_max if vmax is None else vmax)
+
+    slice_plot = yt.SlicePlot(
+        base_dataset,
+        str(base_item["attrs"]["axis"]),
+        base_yt_field,
+        center="c",
+        origin="native",
+    )
+    slice_plot.set_log(base_yt_field, False)
+    slice_plot.set_cmap(base_yt_field, cmap)
+    slice_plot.set_axes_unit("unitary")
+    slice_plot.set_font(_yt_font_style())
+    slice_plot.set_figure_size(float(figure_size))
+    data_res = max(base_item["values"].shape)
+    slice_plot.set_buff_size((data_res, data_res))
+    if not np.isclose(zmin, zmax):
+        slice_plot.set_zlim(base_yt_field, zmin=zmin, zmax=zmax)
+    slice_plot.set_minorticks("all", False)
+    slice_plot.set_colorbar_minorticks("all", False)
+    if width is not None:
+        slice_plot.set_width((float(width), "code_length"))
+    slice_plot.hide_colorbar()
+
+    slice_plot.render()
+    window_plot = slice_plot.plots[base_yt_field]
+    image = window_plot.axes.images[0]
+    image.set_interpolation("bicubic")
+    if hasattr(image, "set_interpolation_stage"):
+        image.set_interpolation_stage("rgba")
+    image.set_visible(False)
+    ax = window_plot.axes
+
+    for index, item in enumerate(prepared):
+        color = contour_color if index == 0 else COMPARE_COLORS[index]
+        item["compare_color"] = color
+        ax.contour(
+            item["grid_x"],
+            item["grid_y"],
+            item["contour_field"],
+            levels=levels,
+            colors=color,
+            linewidths=1.5,
+        )
+        print(f"Compare color: {item['label']} -> {color}")
+
+    h_axis, v_axis = reference_axes
+    ax.set_xlabel(h_axis)
+    ax.set_ylabel(v_axis)
+    ax.set_aspect("equal")
+    if width is not None:
+        half_width = 0.5 * float(width)
+        h_center = 0.5 * (float(reference_horizontal[0]) + float(reference_horizontal[-1]))
+        v_center = 0.5 * (float(reference_vertical[0]) + float(reference_vertical[-1]))
+        ax.set_xlim(h_center - half_width, h_center + half_width)
+        ax.set_ylim(v_center - half_width, v_center + half_width)
+
+    if output_paths is None:
+        output_paths = [
+            default_comparison_output_name(
+                item["slice_file"],
+                field_name,
+                slice_tag,
+                output_format,
+                item["attrs"],
+                normalize=normalize,
+            )
+            for item in prepared
+        ]
+    if metadata_paths is None:
+        metadata_paths = [
+            default_comparison_metadata_name(
+                item["slice_file"],
+                field_name,
+                slice_tag,
+                item["attrs"],
+                normalize=normalize,
+            )
+            for item in prepared
+        ]
+
+    for output_path in dict.fromkeys(output_paths):
+        saved_path = window_plot.save(output_path, mpl_kwargs={"dpi": dpi})
+        print(f"Saved comparison contour: {saved_path}")
+    metadata_text = build_comparison_metadata_text(prepared, field_name, slice_tag, normalize, levels)
+    for metadata_path in dict.fromkeys(metadata_paths):
+        with open(metadata_path, "w", encoding="utf-8") as handle:
+            handle.write(metadata_text)
+        print(f"Saved comparison metadata: {metadata_path}")
+
+    if plot:
+        slice_plot.show()
+
+
 def render_saved_slice(
     slice_file,
     field_name,
@@ -694,9 +971,65 @@ def print_yt_summary(slice_file, field_name, slice_tag):
     print(f"  Available yt fields: {dataset.field_list}")
 
 
+def process_slice_file(slice_file, args):
+    """Process one slice file using parsed CLI arguments."""
+    print(f"Processing slice file: {os.path.abspath(slice_file)}")
+
+    if args.list:
+        print_summary(slice_file)
+        return
+
+    if args.field is None and args.slice_tag is None:
+        print_summary(slice_file)
+        return
+
+    print_saved_slice_metadata(slice_file, args.field, args.slice_tag)
+
+    if args.yt_info:
+        print_yt_summary(slice_file, args.field, args.slice_tag)
+
+    render_saved_slice(
+        slice_file,
+        args.field,
+        args.slice_tag,
+        args.cmap,
+        args.width,
+        args.vmin,
+        args.vmax,
+        args.output,
+        args.format,
+        args.plot,
+        args.dpi,
+        args.figsize,
+        args.normalize,
+    )
+
+    if args.contour:
+        render_saved_slice_contour(
+            slice_file,
+            args.field,
+            args.slice_tag,
+            args.cmap,
+            args.width,
+            args.vmin,
+            args.vmax,
+            None,
+            args.format,
+            args.plot,
+            args.dpi,
+            args.figsize,
+            args.contour_levels,
+            args.contour_values,
+            args.contour_filled,
+            args.contour_color,
+            args.contour_backend,
+            args.normalize,
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Inspect and replot saved 2D slice data from *_slices.h5 files.")
-    parser.add_argument("slice_file", help="Path to the combined *_slices.h5 file")
+    parser.add_argument("slice_file", nargs="+", help="One or more paths to combined *_slices.h5 files")
     parser.add_argument("--list", action="store_true", help="Print the available fields and slices, then exit.")
     parser.add_argument("--field", default=None, help="Field name to replot, for example velocity_magnitude.")
     parser.add_argument("--slice", dest="slice_tag", default=None, help="Slice tag to replot, for example xy_center.")
@@ -721,6 +1054,11 @@ def main():
         help="Construct a one-cell-thick yt uniform-grid dataset for the selected slice and print its summary.",
     )
     parser.add_argument("--contour", action="store_true", help="Also render a separate contour plot alongside the default yt colormap plot.")
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="Overlay contour lines from two or three slice files and copy the comparison plot into each slice_replots directory.",
+    )
     parser.add_argument("--contour-levels", type=int, default=12, help="Number of contour levels. Default is 12.")
     parser.add_argument(
         "--contour-values",
@@ -737,38 +1075,32 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.list:
-        print_summary(args.slice_file)
-        return
-    if args.field is None and args.slice_tag is None:
-        print_summary(args.slice_file)
-        return
     if args.field is None or args.slice_tag is None:
-        raise SystemExit("--field and --slice must be provided together.")
+        if not (args.field is None and args.slice_tag is None):
+            raise SystemExit("--field and --slice must be provided together.")
+    if args.output is not None and len(args.slice_file) > 1:
+        raise SystemExit("--output can only be used when processing a single slice file.")
+    if args.compare and not args.list and not (args.field is None and args.slice_tag is None):
+        if not args.contour:
+            raise SystemExit("--compare requires --contour.")
+        if len(args.slice_file) < 2:
+            raise SystemExit("--compare requires at least two slice files.")
+        if len(args.slice_file) > len(COMPARE_COLORS):
+            raise SystemExit("--compare supports at most three slice files.")
 
-    print_saved_slice_metadata(args.slice_file, args.field, args.slice_tag)
+    for index, slice_file in enumerate(args.slice_file):
+        if index > 0:
+            print()
+            print("=" * 80)
+            print()
+        process_slice_file(slice_file, args)
 
-    if args.yt_info:
-        print_yt_summary(args.slice_file, args.field, args.slice_tag)
-
-    render_saved_slice(
-        args.slice_file,
-        args.field,
-        args.slice_tag,
-        args.cmap,
-        args.width,
-        args.vmin,
-        args.vmax,
-        args.output,
-        args.format,
-        args.plot,
-        args.dpi,
-        args.figsize,
-        args.normalize,
-    )
-
-    if args.contour:
-        render_saved_slice_contour(
+    if args.compare and not args.list and args.field is not None and args.slice_tag is not None:
+        print()
+        print("=" * 80)
+        print()
+        print("Rendering comparison contour overlay...")
+        render_compared_contours(
             args.slice_file,
             args.field,
             args.slice_tag,
@@ -776,17 +1108,15 @@ def main():
             args.width,
             args.vmin,
             args.vmax,
-            None,
             args.format,
             args.plot,
             args.dpi,
             args.figsize,
             args.contour_levels,
             args.contour_values,
-            args.contour_filled,
             args.contour_color,
-            args.contour_backend,
             args.normalize,
+            contour_filled=args.contour_filled,
         )
 
 
