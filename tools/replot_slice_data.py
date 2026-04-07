@@ -1,5 +1,25 @@
 #!/usr/bin/env python3
-"""Inspect and replot saved 2D slice data from a combined *_slices.h5 file."""
+"""Inspect and replot saved 2D slice data from a combined *_slices.h5 file.
+
+Example commands:
+  List available fields and slices:
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --list
+
+  Render one yt slice image:
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center
+
+  Render a separate contour plot with the default yt backend:
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour
+
+  Render contours with a fixed number of levels:
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour --contour-levels 20
+
+  Render contours at explicit values:
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour --contour-values 0.5,1.0,2.0,4.0,8.0
+
+  Render normalized vorticity and contour values in normalized units:
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --normalize vorticity --contour --contour-values 6.28319,12.5664,25.1327
+"""
 
 from __future__ import annotations
 
@@ -25,6 +45,161 @@ def _yt_font_style():
         "family": "serif",
         "size": 18,
     }
+
+
+def _prepare_plot_values(values):
+    """Clean saved slice values before plotting."""
+    values = np.asarray(values, dtype=np.float64).copy()
+    values[np.abs(values) < 1.0e-12] = 0.0
+    return np.round(values, decimals=10)
+
+
+def _star_plot_label(plot_label):
+    """Append a superscript star to a plot label."""
+    plot_label = str(plot_label)
+    if plot_label.startswith("$") and plot_label.endswith("$"):
+        core = plot_label[1:-1]
+        if "^*" in core:
+            return plot_label
+        if core.startswith("|") and core.endswith("|"):
+            return f"${core[:-1]}^*|$"
+        return f"${core}^*$"
+    if plot_label.endswith("^*"):
+        return plot_label
+    return f"{plot_label}^*"
+
+
+def _apply_normalization(saved, normalize, print_stats=False):
+    """Return a copy of saved slice data with optional normalization applied."""
+    values_raw = _prepare_plot_values(saved["values"])
+    attrs = dict(saved["attrs"])
+    values = values_raw.copy()
+
+    if print_stats:
+        print(f"Raw data min: {float(np.min(values_raw)):.6g}")
+        print(f"Raw data max: {float(np.max(values_raw)):.6g}")
+
+    if normalize == "none":
+        normalized = dict(saved)
+        normalized["values"] = values
+        normalized["attrs"] = attrs
+        return normalized
+
+    if normalize == "vorticity":
+        field_family = str(attrs.get("field_family", "")).strip()
+        if field_family != "vorticity":
+            if print_stats:
+                print(
+                    f"Normalization preset '{normalize}' requested, but field '{attrs.get('field_name', '')}' "
+                    f"is not in the vorticity family. Leaving values unchanged."
+                )
+            normalized = dict(saved)
+            normalized["values"] = values
+            normalized["attrs"] = attrs
+            return normalized
+
+        U0 = 1.0
+        L = 1.0 / (2.0 * np.pi)
+        reference_scale = U0 / L
+        normalization_factor = reference_scale
+        values = np.round(values_raw * normalization_factor, decimals=10)
+        attrs["plot_label"] = _star_plot_label(attrs.get("plot_label", attrs.get("field_name", "")))
+        attrs["normalization"] = normalize
+        attrs["normalization_factor"] = normalization_factor
+        attrs["normalization_reference_scale"] = reference_scale
+
+        if print_stats:
+            print("Applying normalization preset: vorticity")
+            print(f"  U0 = {U0:.6g}")
+            print(f"  L = {L:.6g}")
+            print(f"  Reference scale U0/L = {reference_scale:.6g}")
+            print(f"  Normalization uses omega* = omega * (U0/L) = omega * {normalization_factor:.6g}")
+            print(f"Normalized data min: {float(np.min(values)):.6g}")
+            print(f"Normalized data max: {float(np.max(values)):.6g}")
+
+        normalized = dict(saved)
+        normalized["values"] = values
+        normalized["attrs"] = attrs
+        return normalized
+
+    raise ValueError(f"Unsupported normalization preset: {normalize}")
+
+
+def _contour_limits(values, vmin, vmax):
+    """Return contour range and validate it is not degenerate."""
+    zmin = float(np.min(values) if vmin is None else vmin)
+    zmax = float(np.max(values) if vmax is None else vmax)
+    if np.isclose(zmin, zmax):
+        raise ValueError("Contour plotting requires non-constant slice values.")
+    return zmin, zmax
+
+
+def _parse_contour_values(contour_values):
+    """Parse a comma-separated list of contour values."""
+    if contour_values is None:
+        return None
+
+    pieces = [piece.strip() for piece in str(contour_values).split(",")]
+    pieces = [piece for piece in pieces if piece]
+    if not pieces:
+        raise ValueError("--contour-values must contain at least one numeric value.")
+
+    try:
+        levels = np.array([float(piece) for piece in pieces], dtype=np.float64)
+    except ValueError as exc:
+        raise ValueError("--contour-values must be a comma-separated list of numbers.") from exc
+
+    levels = np.unique(levels)
+    if levels.size == 0:
+        raise ValueError("--contour-values must contain at least one numeric value.")
+    return np.sort(levels)
+
+
+def _resolve_contour_levels(values, vmin, vmax, contour_levels, contour_values):
+    """Return explicit contour levels from user input or default spacing."""
+    if contour_values is not None:
+        return _parse_contour_values(contour_values)
+
+    zmin, zmax = _contour_limits(values, vmin, vmax)
+    return np.linspace(zmin, zmax, contour_levels)
+
+
+def _build_contour_grid(horizontal_coords, vertical_coords, values, target_size=None):
+    """Return a regular grid for smoother contouring on yt-backed plots."""
+    horizontal_coords = np.asarray(horizontal_coords, dtype=np.float64)
+    vertical_coords = np.asarray(vertical_coords, dtype=np.float64)
+    values = np.asarray(values, dtype=np.float64)
+
+    if target_size is None:
+        target_size = min(max(8 * max(values.shape), 512), 2048)
+
+    target_h = max(len(horizontal_coords), int(target_size))
+    target_v = max(len(vertical_coords), int(target_size))
+
+    if target_h == len(horizontal_coords) and target_v == len(vertical_coords):
+        X, Y = np.meshgrid(horizontal_coords, vertical_coords)
+        return X, Y, values
+
+    dense_h = np.linspace(float(horizontal_coords[0]), float(horizontal_coords[-1]), target_h)
+    dense_v = np.linspace(float(vertical_coords[0]), float(vertical_coords[-1]), target_v)
+
+    try:
+        from scipy.interpolate import RectBivariateSpline
+
+        ky = min(3, len(vertical_coords) - 1)
+        kx = min(3, len(horizontal_coords) - 1)
+        if ky >= 1 and kx >= 1:
+            spline = RectBivariateSpline(vertical_coords, horizontal_coords, values, ky=ky, kx=kx)
+            dense_values = spline(dense_v, dense_h)
+        else:
+            raise ValueError("Not enough points for spline interpolation.")
+    except Exception:
+        dense_values = values
+        dense_h = horizontal_coords
+        dense_v = vertical_coords
+
+    X, Y = np.meshgrid(dense_h, dense_v)
+    return X, Y, dense_values
 
 
 def print_summary(filepath):
@@ -55,6 +230,15 @@ def output_stem(source_path, field_name):
     return f"{field_name}_{base}"
 
 
+def normalization_suffix(normalize):
+    """Return a filename suffix for a normalization preset."""
+    if normalize == "none":
+        return ""
+    if normalize == "vorticity":
+        return "_vorticity_star"
+    return f"_{normalize}"
+
+
 def output_source_path(slice_file, field_name, saved_attrs):
     """Return the path whose stem should drive default replot naming for one field."""
     source_h5 = str(saved_attrs.get("source_h5", "")).strip()
@@ -77,20 +261,21 @@ def output_source_path(slice_file, field_name, saved_attrs):
     return slice_file
 
 
-def default_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs):
+def default_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none"):
     """Return the default output path for one replotted saved slice."""
     directory = os.path.dirname(os.path.abspath(slice_file))
     output_dir = os.path.join(directory, "slice_replots")
     os.makedirs(output_dir, exist_ok=True)
-    base = output_stem(output_source_path(slice_file, field_name, saved_attrs), field_name)
+    base = output_stem(output_source_path(slice_file, field_name, saved_attrs), field_name) + normalization_suffix(normalize)
     return os.path.join(output_dir, f"{base}_{slice_tag}.{output_format}")
 
 
-def build_yt_slice_dataset(slice_file, field_name, slice_tag):
+def build_yt_slice_dataset(slice_file, field_name, slice_tag, saved=None):
     """Construct a one-cell-thick yt uniform-grid dataset from one saved slice."""
     import yt
 
-    saved = load_saved_slice(slice_file, field_name, slice_tag)
+    if saved is None:
+        saved = load_saved_slice(slice_file, field_name, slice_tag)
     attrs = saved["attrs"]
     axis = str(attrs["axis"])
     plane_coord = float(attrs["plane_coord"])
@@ -133,6 +318,247 @@ def build_yt_slice_dataset(slice_file, field_name, slice_tag):
     return dataset, ("stream", field_name), saved
 
 
+def render_saved_slice_contour_matplotlib(
+    slice_file,
+    field_name,
+    slice_tag,
+    cmap,
+    width,
+    vmin,
+    vmax,
+    output,
+    output_format,
+    plot,
+    dpi,
+    figure_size,
+    contour_levels,
+    contour_values,
+    contour_filled,
+    contour_color,
+    normalize,
+):
+    """Render a separate contour plot for one saved slice using matplotlib.
+
+    This is always a second output file alongside the regular yt colormap plot.
+    Uses matplotlib's marching-squares contour algorithm directly on the raw 2D
+    data array, producing smooth contour curves independent of buffer resolution.
+    """
+    import matplotlib.pyplot as plt
+
+    saved = _apply_normalization(load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
+    attrs = saved["attrs"]
+    values = _prepare_plot_values(saved["values"])
+    h_coords = np.asarray(saved["coord_horizontal"], dtype=np.float64)
+    v_coords = np.asarray(saved["coord_vertical"], dtype=np.float64)
+
+    levels = _resolve_contour_levels(values, vmin, vmax, contour_levels, contour_values)
+
+    X, Y = np.meshgrid(h_coords, v_coords)
+
+    fig, ax = plt.subplots(figsize=(figure_size, figure_size))
+
+    if contour_filled:
+        cf = ax.contourf(X, Y, values, levels=levels, cmap=cmap)
+        fig.colorbar(cf, ax=ax, label=str(attrs["plot_label"]))
+
+    CS = ax.contour(X, Y, values, levels=levels, colors=contour_color, linewidths=1.5)
+    ax.clabel(CS, fontsize=8, inline=True, fmt="%.3g")
+
+    h_axis = str(attrs.get("horizontal_axis", "h"))
+    v_axis = str(attrs.get("vertical_axis", "v"))
+    ax.set_xlabel(h_axis)
+    ax.set_ylabel(v_axis)
+    ax.set_title(f"{field_name}  [{slice_tag}]")
+    ax.set_aspect("equal")
+    if width is not None:
+        half_width = 0.5 * float(width)
+        h_center = 0.5 * (float(h_coords[0]) + float(h_coords[-1]))
+        v_center = 0.5 * (float(v_coords[0]) + float(v_coords[-1]))
+        ax.set_xlim(h_center - half_width, h_center + half_width)
+        ax.set_ylim(v_center - half_width, v_center + half_width)
+    fig.tight_layout()
+
+    output_path = output or default_output_name(
+        slice_file,
+        field_name,
+        f"{slice_tag}_contour",
+        output_format,
+        attrs,
+        normalize=normalize,
+    )
+    fig.savefig(output_path, dpi=dpi)
+    print(f"Saved contour: {output_path}")
+    if plot:
+        plt.show()
+    plt.close(fig)
+
+
+def render_saved_slice_contour_yt(
+    slice_file,
+    field_name,
+    slice_tag,
+    cmap,
+    width,
+    vmin,
+    vmax,
+    output,
+    output_format,
+    plot,
+    dpi,
+    figure_size,
+    contour_levels,
+    contour_values,
+    contour_filled,
+    contour_color,
+    normalize,
+):
+    """Render a separate contour plot for one saved slice using yt."""
+    import yt
+
+    saved = _apply_normalization(load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
+    dataset, yt_field, saved = build_yt_slice_dataset(slice_file, field_name, slice_tag, saved=saved)
+    values = _prepare_plot_values(saved["values"])
+    attrs = saved["attrs"]
+    horizontal_coords = np.asarray(saved["coord_horizontal"], dtype=np.float64)
+    vertical_coords = np.asarray(saved["coord_vertical"], dtype=np.float64)
+    output_path = output or default_output_name(
+        slice_file,
+        field_name,
+        f"{slice_tag}_contour",
+        output_format,
+        attrs,
+        normalize=normalize,
+    )
+    zmin, zmax = _contour_limits(values, vmin, vmax)
+    levels = _resolve_contour_levels(values, vmin, vmax, contour_levels, contour_values)
+    grid_x, grid_y, contour_field = _build_contour_grid(horizontal_coords, vertical_coords, values)
+
+    slice_plot = yt.SlicePlot(dataset, str(attrs["axis"]), yt_field, center="c", origin="native")
+    slice_plot.set_log(yt_field, False)
+    slice_plot.set_cmap(yt_field, cmap)
+    slice_plot.set_axes_unit("unitary")
+    slice_plot.set_font(_yt_font_style())
+    slice_plot.set_figure_size(float(figure_size))
+    data_res = max(values.shape)
+    slice_plot.set_buff_size((data_res, data_res))
+    slice_plot.set_zlim(yt_field, zmin=zmin, zmax=zmax)
+    slice_plot.set_minorticks("all", False)
+    slice_plot.set_colorbar_minorticks("all", False)
+    if width is not None:
+        slice_plot.set_width((float(width), "code_length"))
+
+    if not contour_filled:
+        slice_plot.hide_colorbar()
+
+    slice_plot.render()
+    window_plot = slice_plot.plots[yt_field]
+    image = window_plot.axes.images[0]
+    image.set_interpolation("bicubic")
+    if hasattr(image, "set_interpolation_stage"):
+        image.set_interpolation_stage("rgba")
+    axes = window_plot.axes
+    image.set_visible(False)
+
+    if contour_filled:
+        axes.contourf(grid_x, grid_y, contour_field, levels=levels, cmap=cmap)
+        window_plot.cb.set_label(str(attrs["plot_label"]))
+
+    contour_set = axes.contour(grid_x, grid_y, contour_field, levels=levels, colors=contour_color, linewidths=1.5)
+    axes.clabel(contour_set, fontsize=8, inline=True, fmt="%.3g")
+    saved_path = window_plot.save(output_path, mpl_kwargs={"dpi": dpi})
+    print(f"Saved contour: {saved_path}")
+    if plot:
+        slice_plot.show()
+
+
+def render_saved_slice_contour(
+    slice_file,
+    field_name,
+    slice_tag,
+    cmap,
+    width,
+    vmin,
+    vmax,
+    output,
+    output_format,
+    plot,
+    dpi,
+    figure_size,
+    contour_levels,
+    contour_values,
+    contour_filled,
+    contour_color,
+    contour_backend,
+    normalize,
+):
+    """Render a separate contour plot using yt or matplotlib."""
+    if contour_backend == "matplotlib":
+        render_saved_slice_contour_matplotlib(
+            slice_file,
+            field_name,
+            slice_tag,
+            cmap,
+            width,
+            vmin,
+            vmax,
+            output,
+            output_format,
+            plot,
+            dpi,
+            figure_size,
+            contour_levels,
+            contour_values,
+            contour_filled,
+            contour_color,
+            normalize,
+        )
+        return
+
+    try:
+        render_saved_slice_contour_yt(
+            slice_file,
+            field_name,
+            slice_tag,
+            cmap,
+            width,
+            vmin,
+            vmax,
+            output,
+            output_format,
+            plot,
+            dpi,
+            figure_size,
+            contour_levels,
+            contour_values,
+            contour_filled,
+            contour_color,
+            normalize,
+        )
+    except Exception as exc:
+        if contour_backend == "yt":
+            raise
+        print(f"yt contour rendering failed ({exc}); falling back to matplotlib.")
+        render_saved_slice_contour_matplotlib(
+            slice_file,
+            field_name,
+            slice_tag,
+            cmap,
+            width,
+            vmin,
+            vmax,
+            output,
+            output_format,
+            plot,
+            dpi,
+            figure_size,
+            contour_levels,
+            contour_values,
+            contour_filled,
+            contour_color,
+            normalize,
+        )
+
+
 def render_saved_slice(
     slice_file,
     field_name,
@@ -146,19 +572,30 @@ def render_saved_slice(
     plot,
     dpi,
     figure_size,
+    normalize,
 ):
     """Render one saved slice plane to disk and/or screen with yt bicubic output."""
     import yt
 
-    dataset, yt_field, saved = build_yt_slice_dataset(slice_file, field_name, slice_tag)
-    values = np.asarray(saved["values"], dtype=np.float64).copy()
-    values[np.abs(values) < 1.0e-12] = 0.0
-    values = np.round(values, decimals=10)
+    saved = _apply_normalization(load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=True)
+    dataset, yt_field, saved = build_yt_slice_dataset(slice_file, field_name, slice_tag, saved=saved)
+    values = _prepare_plot_values(saved["values"])
 
     attrs = saved["attrs"]
-    output_path = output or default_output_name(slice_file, field_name, slice_tag, output_format, attrs)
-    zmin = float(np.min(values) if vmin is None else vmin)
-    zmax = float(np.max(values) if vmax is None else vmax)
+    output_path = output or default_output_name(
+        slice_file,
+        field_name,
+        slice_tag,
+        output_format,
+        attrs,
+        normalize=normalize,
+    )
+    data_min = float(np.min(values))
+    data_max = float(np.max(values))
+    print(f"Plot data min: {data_min:.6g}")
+    print(f"Plot data max: {data_max:.6g}")
+    zmin = float(data_min if vmin is None else vmin)
+    zmax = float(data_max if vmax is None else vmax)
 
     slice_plot = yt.SlicePlot(dataset, str(attrs["axis"]), yt_field, center="c", origin="native")
     slice_plot.set_log(yt_field, False)
@@ -273,9 +710,30 @@ def main():
     parser.add_argument("--dpi", type=int, default=600, help="Raster save DPI. Default is 600.")
     parser.add_argument("--figsize", type=float, default=8.0, help="Square figure size in inches. Default is 8.0.")
     parser.add_argument(
+        "--normalize",
+        default="none",
+        choices=["none", "vorticity"],
+        help="Optional normalization preset. 'vorticity' uses U0=1 and L=1/(2*pi), and interprets contour values in normalized units.",
+    )
+    parser.add_argument(
         "--yt-info",
         action="store_true",
         help="Construct a one-cell-thick yt uniform-grid dataset for the selected slice and print its summary.",
+    )
+    parser.add_argument("--contour", action="store_true", help="Also render a separate contour plot alongside the default yt colormap plot.")
+    parser.add_argument("--contour-levels", type=int, default=12, help="Number of contour levels. Default is 12.")
+    parser.add_argument(
+        "--contour-values",
+        default=None,
+        help="Optional comma-separated contour values, for example '0.5,1.0,2.0,4.0,8.0'. Overrides --contour-levels.",
+    )
+    parser.add_argument("--contour-filled", action="store_true", help="Use filled contours (contourf) as background behind the contour lines.")
+    parser.add_argument("--contour-color", default="k", help="Single color for contour lines, e.g. 'k', 'white', '#ff0000'. Default is 'k' (black).")
+    parser.add_argument(
+        "--contour-backend",
+        default="yt",
+        choices=["auto", "yt", "matplotlib"],
+        help="Contour renderer to use. Default is 'yt'. 'auto' tries yt first and falls back to matplotlib.",
     )
     args = parser.parse_args()
 
@@ -289,8 +747,10 @@ def main():
         raise SystemExit("--field and --slice must be provided together.")
 
     print_saved_slice_metadata(args.slice_file, args.field, args.slice_tag)
+
     if args.yt_info:
         print_yt_summary(args.slice_file, args.field, args.slice_tag)
+
     render_saved_slice(
         args.slice_file,
         args.field,
@@ -304,7 +764,30 @@ def main():
         args.plot,
         args.dpi,
         args.figsize,
+        args.normalize,
     )
+
+    if args.contour:
+        render_saved_slice_contour(
+            args.slice_file,
+            args.field,
+            args.slice_tag,
+            args.cmap,
+            args.width,
+            args.vmin,
+            args.vmax,
+            None,
+            args.format,
+            args.plot,
+            args.dpi,
+            args.figsize,
+            args.contour_levels,
+            args.contour_values,
+            args.contour_filled,
+            args.contour_color,
+            args.contour_backend,
+            args.normalize,
+        )
 
 
 if __name__ == "__main__":
