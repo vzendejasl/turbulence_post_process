@@ -650,6 +650,10 @@ def run_visualization(
         log_rank0(rank, f"Completed distributed vorticity field in {time.perf_counter() - vorticity_start:.2f}s")
 
     outputs = []
+    # DANE can hang in the legacy MPI slice-data write path for x-normal slices,
+    # where only one rank owns the requested plane. Keep the old branch below so
+    # it can be restored easily if we ever want to revisit distributed slice writes.
+    use_legacy_parallel_slice_data_write = False
     for dataset_name, field_label, latex_label, field_family in field_specs:
         log_rank0(rank, f"Field: {field_label}")
         for axis_name, plane_index, slice_tag in requests:
@@ -672,9 +676,18 @@ def run_visualization(
                     comm,
                 )
 
+            gather_start = time.perf_counter()
+            plane = gather_plane(axis_name, local_bounds, local_plane, meta["shape"], comm)
+            log_rank0(
+                rank,
+                f"  Gather finished for {field_label}/{stored_slice_tag} in "
+                f"{time.perf_counter() - gather_start:.2f}s",
+            )
             if save_slice_data:
                 write_start = time.perf_counter()
-                if h5py.get_config().mpi:
+                if use_legacy_parallel_slice_data_write and h5py.get_config().mpi:
+                    # Legacy MPI-HDF5 slice writes retained for reference. This path
+                    # hung on DANE for x-normal slices when only one rank had data.
                     write_slice_plane_parallel(
                         saved_slice_data_path,
                         field_label,
@@ -686,7 +699,8 @@ def run_visualization(
                     )
                     comm.Barrier()
                 else:
-                    plane = gather_plane(axis_name, local_bounds, local_plane, meta["shape"], comm)
+                    # Gathered planes are already needed for rank-0 rendering, so
+                    # write the reusable slice-data file serially on rank 0.
                     if rank == 0:
                         write_slice_plane_serial(saved_slice_data_path, field_label, stored_slice_tag, plane)
                     comm.Barrier()
@@ -695,13 +709,6 @@ def run_visualization(
                     f"  Slice-data write finished for {field_label}/{stored_slice_tag} in "
                     f"{time.perf_counter() - write_start:.2f}s",
                 )
-            gather_start = time.perf_counter()
-            plane = gather_plane(axis_name, local_bounds, local_plane, meta["shape"], comm)
-            log_rank0(
-                rank,
-                f"  Gather finished for {field_label}/{stored_slice_tag} in "
-                f"{time.perf_counter() - gather_start:.2f}s",
-            )
 
             rendered_paths = []
             if rank == 0:
