@@ -270,3 +270,93 @@ def plot_spectra(results):
 
         fig.tight_layout()
         plt.show()
+
+
+def save_qr_joint_pdf(
+    qr_result,
+    filename,
+    step_number,
+    time_value,
+    nx,
+    ny,
+    nz,
+):
+    """Save the Q-R joint PDF histogram and normalized density to HDF5."""
+    stem = _spectra_output_stem(filename)
+    output_path = f"{stem}_qr_joint_pdf.h5"
+
+    with h5py.File(output_path, "w") as hf:
+        hf.attrs["source_file"] = os.path.abspath(filename)
+        hf.attrs["step"] = str(step_number)
+        hf.attrs["time"] = float(time_value)
+        hf.attrs["grid_shape"] = np.asarray((nx, ny, nz), dtype=np.int64)
+        hf.attrs["avg_SijSij"] = float(qr_result["avg_sij_sij"])
+        hf.attrs["total_samples"] = int(qr_result["total_samples"])
+        hf.attrs["q_min"] = float(qr_result["q_min"])
+        hf.attrs["q_max"] = float(qr_result["q_max"])
+        hf.attrs["r_min"] = float(qr_result["r_min"])
+        hf.attrs["r_max"] = float(qr_result["r_max"])
+        hf.attrs["q_normalization"] = "Q / <SijSij>"
+        hf.attrs["r_normalization"] = "R / <SijSij>^(3/2)"
+
+        hf.create_dataset("q_edges", data=np.asarray(qr_result["q_edges"], dtype=np.float64))
+        hf.create_dataset("r_edges", data=np.asarray(qr_result["r_edges"], dtype=np.float64))
+        hf.create_dataset("q_centers", data=np.asarray(qr_result["q_centers"], dtype=np.float64))
+        hf.create_dataset("r_centers", data=np.asarray(qr_result["r_centers"], dtype=np.float64))
+        hf.create_dataset("counts", data=np.asarray(qr_result["counts"], dtype=np.float64))
+        hf.create_dataset("joint_pdf", data=np.asarray(qr_result["joint_pdf"], dtype=np.float64))
+
+    print(f"Saved Q-R joint PDF data: {output_path}")
+    return output_path
+
+
+def plot_qr_joint_pdf(qr_result, filename):
+    """Save a PDF plot of the normalized Q-R joint PDF with R on x and Q on y."""
+    stem = _spectra_output_stem(filename)
+    output_path = f"{stem}_qr_joint_pdf.pdf"
+
+    q_centers = np.asarray(qr_result["q_centers"], dtype=np.float64)
+    r_centers = np.asarray(qr_result["r_centers"], dtype=np.float64)
+    joint_pdf = np.asarray(qr_result["joint_pdf"], dtype=np.float64)
+    pdf_cap = 0.025
+    contour_levels = np.linspace(0.0, pdf_cap, 21, dtype=np.float64)
+    # Match the literature-style plot where all values above the top isovalue
+    # saturate to the same dark red instead of stretching the color scale.
+    pdf_to_plot = np.clip(joint_pdf, contour_levels[0], contour_levels[-1])
+    r_curve = np.linspace(-0.8, 0.8, 800, dtype=np.float64)
+    q_curve = -np.cbrt((27.0 / 4.0) * (r_curve**2))
+
+    with plt.rc_context(_plot_style()):
+        fig, ax = plt.subplots(figsize=(7.0, 6.0))
+        filled = ax.contourf(
+            r_centers,
+            q_centers,
+            pdf_to_plot,
+            levels=contour_levels,
+            cmap="RdBu_r",
+            extend="max",
+        )
+        ax.contour(
+            r_centers,
+            q_centers,
+            pdf_to_plot,
+            levels=contour_levels[1:-1:2],
+            colors="k",
+            linewidths=0.4,
+            alpha=0.35,
+        )
+        ax.plot(r_curve, q_curve, color="black", linewidth=1.5)
+        colorbar = fig.colorbar(filled, ax=ax)
+        colorbar.set_label(r"$\mathrm{joint\ PDF}$")
+        ax.set_xlabel(r"$R / \langle S_{ij} S_{ij} \rangle^{3/2}$")
+        ax.set_ylabel(r"$Q / \langle S_{ij} S_{ij} \rangle$")
+        ax.set_title(r"Normalized $Q$-$R$ Joint PDF")
+        ax.set_xlim(-0.8, 0.8)
+        ax.set_ylim(-1.0, 1.0)
+        ax.grid(True, which="both", alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(output_path)
+        plt.close(fig)
+
+    print(f"Saved Q-R joint PDF plot: {output_path}")
+    return output_path

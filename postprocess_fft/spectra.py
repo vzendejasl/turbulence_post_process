@@ -151,3 +151,100 @@ def compensate_spectrum(k_centers, values, exponent):
     mask = np.asarray(k_centers) > 0.0
     compensated[mask] = np.asarray(values, dtype=np.float64)[mask] * np.asarray(k_centers, dtype=np.float64)[mask] ** exponent
     return compensated
+
+
+def compute_qr_joint_pdf(
+    dux_dx,
+    dux_dy,
+    dux_dz,
+    duy_dx,
+    duy_dy,
+    duy_dz,
+    duz_dx,
+    duz_dy,
+    duz_dz,
+    comm,
+    bins=256,
+):
+    """Compute a distributed joint PDF of normalized Q and R invariants."""
+    s12 = 0.5 * (dux_dy + duy_dx)
+    s13 = 0.5 * (dux_dz + duz_dx)
+    s23 = 0.5 * (duy_dz + duz_dy)
+    sij_sij = dux_dx**2 + duy_dy**2 + duz_dz**2 + 2.0 * (s12**2 + s13**2 + s23**2)
+
+    local_count = int(dux_dx.size)
+    global_count = comm.allreduce(local_count, op=MPI.SUM)
+    local_sum_sij_sij = float(np.sum(sij_sij, dtype=np.float64))
+    global_sum_sij_sij = comm.allreduce(local_sum_sij_sij, op=MPI.SUM)
+    avg_sij_sij = global_sum_sij_sij / float(global_count) if global_count > 0 else 0.0
+    sij_sij_scale = max(abs(avg_sij_sij), 1.0e-30)
+
+    div_u = dux_dx + duy_dy + duz_dz
+    trace_a2 = (
+        dux_dx * dux_dx + dux_dy * duy_dx + dux_dz * duz_dx
+        + duy_dx * dux_dy + duy_dy * duy_dy + duy_dz * duz_dy
+        + duz_dx * dux_dz + duz_dy * duy_dz + duz_dz * duz_dz
+    )
+    q_local = 0.5 * (div_u**2 - trace_a2)
+    r_local = -(
+        dux_dx * (duy_dy * duz_dz - duy_dz * duz_dy)
+        - dux_dy * (duy_dx * duz_dz - duy_dz * duz_dx)
+        + dux_dz * (duy_dx * duz_dy - duy_dy * duz_dx)
+    )
+
+    q_norm_local = q_local / sij_sij_scale
+    r_norm_local = r_local / (sij_sij_scale ** 1.5)
+
+    q_local_min = float(np.min(q_norm_local)) if q_norm_local.size > 0 else 0.0
+    q_local_max = float(np.max(q_norm_local)) if q_norm_local.size > 0 else 0.0
+    r_local_min = float(np.min(r_norm_local)) if r_norm_local.size > 0 else 0.0
+    r_local_max = float(np.max(r_norm_local)) if r_norm_local.size > 0 else 0.0
+
+    q_global_min = comm.allreduce(q_local_min, op=MPI.MIN)
+    q_global_max = comm.allreduce(q_local_max, op=MPI.MAX)
+    r_global_min = comm.allreduce(r_local_min, op=MPI.MIN)
+    r_global_max = comm.allreduce(r_local_max, op=MPI.MAX)
+
+    if np.isclose(q_global_min, q_global_max):
+        delta = 1.0 if np.isclose(q_global_min, 0.0) else 1.0e-6 * abs(q_global_min)
+        q_global_min -= delta
+        q_global_max += delta
+    if np.isclose(r_global_min, r_global_max):
+        delta = 1.0 if np.isclose(r_global_min, 0.0) else 1.0e-6 * abs(r_global_min)
+        r_global_min -= delta
+        r_global_max += delta
+
+    q_edges = np.linspace(q_global_min, q_global_max, int(bins) + 1, dtype=np.float64)
+    r_edges = np.linspace(r_global_min, r_global_max, int(bins) + 1, dtype=np.float64)
+
+    local_hist, _, _ = np.histogram2d(
+        q_norm_local.ravel(order="C"),
+        r_norm_local.ravel(order="C"),
+        bins=(q_edges, r_edges),
+    )
+    local_hist = np.ascontiguousarray(local_hist, dtype=np.float64)
+    global_hist = np.zeros_like(local_hist) if comm.Get_rank() == 0 else None
+    comm.Reduce(local_hist, global_hist, op=MPI.SUM, root=0)
+
+    if comm.Get_rank() != 0:
+        return None
+
+    q_centers = 0.5 * (q_edges[:-1] + q_edges[1:])
+    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+    bin_area = np.outer(np.diff(q_edges), np.diff(r_edges))
+    joint_pdf = global_hist / (float(global_count) * bin_area)
+
+    return {
+        "q_edges": q_edges,
+        "r_edges": r_edges,
+        "q_centers": q_centers,
+        "r_centers": r_centers,
+        "counts": global_hist,
+        "joint_pdf": joint_pdf,
+        "avg_sij_sij": float(avg_sij_sij),
+        "total_samples": int(global_count),
+        "q_min": float(q_global_min),
+        "q_max": float(q_global_max),
+        "r_min": float(r_global_min),
+        "r_max": float(r_global_max),
+    }

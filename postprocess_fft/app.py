@@ -16,6 +16,8 @@ from .io import plot_spectra
 from .io import read_data_file_chunked
 from .io import read_data_file_header
 from .io import read_structured_local_fields
+from .io import plot_qr_joint_pdf
+from .io import save_qr_joint_pdf
 from .io import save_spectra
 from .io import structured_h5_metadata
 from .layout import box_shape
@@ -26,6 +28,7 @@ from .spectra import compute_energy_dissipation_enstrophy
 from .spectra import compute_energy_spectrum_from_modes
 from .spectra import compute_enstrophy_spectrum_from_modes
 from .spectra import compute_helicity_spectrum_from_modes
+from .spectra import compute_qr_joint_pdf
 from .spectra import compensate_spectrum
 from .transform import backward_field
 from .transform import forward_field
@@ -205,6 +208,33 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
 
     compute_energy_dissipation_enstrophy(vx_k, vy_k, vz_k, shape, local_box, comm, root)
 
+    if root:
+        print()
+        print("Computing distributed Q-R joint PDF...")
+
+    dux_dx = backward_field(plan, 1j * KX * vx_k, local_shape)
+    dux_dy = backward_field(plan, 1j * KY * vx_k, local_shape)
+    dux_dz = backward_field(plan, 1j * KZ * vx_k, local_shape)
+    duy_dx = backward_field(plan, 1j * KX * vy_k, local_shape)
+    duy_dy = backward_field(plan, 1j * KY * vy_k, local_shape)
+    duy_dz = backward_field(plan, 1j * KZ * vy_k, local_shape)
+    duz_dx = backward_field(plan, 1j * KX * vz_k, local_shape)
+    duz_dy = backward_field(plan, 1j * KY * vz_k, local_shape)
+    duz_dz = backward_field(plan, 1j * KZ * vz_k, local_shape)
+
+    qr_joint_pdf = compute_qr_joint_pdf(
+        dux_dx,
+        dux_dy,
+        dux_dz,
+        duy_dx,
+        duy_dy,
+        duy_dz,
+        duz_dx,
+        duz_dy,
+        duz_dz,
+        comm,
+    )
+
     result = None
     if root:
         E_total = zero_near_zero(E_total)
@@ -242,6 +272,16 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
             rot_ke,
             total_enstrophy,
         )
+        qr_h5_path = save_qr_joint_pdf(
+            qr_joint_pdf,
+            filename,
+            step_number,
+            time_value,
+            shape[0],
+            shape[1],
+            shape[2],
+        )
+        qr_pdf_path = plot_qr_joint_pdf(qr_joint_pdf, filename)
         if visualize:
             print("Visualization is not implemented in the parallel script yet.")
         result = {
@@ -257,6 +297,8 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
             "Enstrophy_compensated": Enst_comp,
             "step_number": step_number,
             "time_value": time_value,
+            "qr_joint_pdf_h5": qr_h5_path,
+            "qr_joint_pdf_pdf": qr_pdf_path,
         }
 
     return result

@@ -26,6 +26,7 @@ Key workflow:
   3. Run the parallel spectra script on that HDF5 file.
   4. Optionally render one or more slices from the structured HDF5 file.
   5. Save the raw 2D slice data to one combined *_slices.h5 file for later replotting.
+  6. Save a normalized Q-R joint PDF beside the spectra outputs.
 
 Structured HDF5 schema written by tools/convert_txt_to_hdf5.py:
   /grid/x
@@ -245,6 +246,7 @@ Files written by the integrated pipeline:
   - Dedalus field-output input writes one structured snapshot named <input>_writeXXXXX.h5
     next to the original field file
   - the FFT spectra .txt and spectra metadata .txt are written next to that .h5 file
+  - a Q-R joint PDF HDF5 file and PDF plot are written next to that .h5 file
   - the slice plots are written under slice_plots/ next to that .h5 file
   - the raw slice data are written under slice_data/ as one combined <base>_slices.h5 file
 
@@ -275,6 +277,10 @@ Default slice outputs from main.py:
   - zx_face_r_criterion.pdf
   - one combined slice_data/<base>_slices.h5 file containing all saved slice arrays
 
+Default Q-R analysis outputs from the FFT step:
+  - <base>_spectra_qr_joint_pdf.h5
+  - <base>_spectra_qr_joint_pdf.pdf
+
 Slice output defaults:
   - format: pdf
   - save dpi: 600
@@ -295,6 +301,12 @@ The combined slice HDF5 stores:
   - stored full-3D global min/max colorbar limits for fields that use global scaling
 
 This lets you replot slices later without recomputing the FFT/vorticity/Q-criterion/R-criterion workflow.
+
+Q-R joint PDF normalization:
+  - Q is normalized by the domain average <SijSij>
+  - R is normalized by <SijSij>^(3/2)
+  - the saved HDF5 includes the bin edges, bin centers, raw counts, normalized joint PDF,
+    and the average <SijSij> used for normalization
 
 Slice colorbar scaling:
   - velocity_magnitude, vorticity-based fields, q_criterion, r_criterion, and appended scalar fields
