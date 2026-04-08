@@ -764,6 +764,376 @@ Observed result:
 
 
 ================================================================================
+DANE
+================================================================================
+
+This is the validated working path on Dane for building the Python HeFFTe stack
+in a personal conda environment and installing HeFFTe under:
+
+  /p/lustre1/zendejas/third_party/heffte/install
+
+Important discovery:
+  On Dane, loading `fftw/3.3.10` switched the runtime from `openmpi/4.1.2` to
+  `mvapich2/2.3.7`.  The working stack kept all build and runtime dependencies
+  on the same MVAPICH2 toolchain:
+
+  gcc/13.3.1
+  mvapich2/2.3.7
+  hdf5-parallel/1.14.0
+  fftw/3.3.10
+  cmake/3.30.5
+
+Working linkage:
+  mpi4py -> libmpi.so.12 from mvapich2-2.3.7-gcc-13.3.1
+  h5py   -> libhdf5.so.310 from hdf5-1.14.0-mvapich2-2.3.7-gcc-13.3.1
+  HeFFTe -> libheffte.so under /p/lustre1/zendejas/third_party/heffte/install/lib64
+
+
+--------------------------------------------------------------------------------
+1. Create the env
+--------------------------------------------------------------------------------
+
+  source /g/g11/zendejas/anaconda3/etc/profile.d/conda.sh
+
+  conda create -y -n heffte-py-dane \
+    python=3.11 \
+    pip \
+    numpy \
+    scipy \
+    matplotlib \
+    pandas \
+    yt \
+    cython \
+    cmake \
+    ninja \
+    pkg-config \
+    git
+
+  conda activate heffte-py-dane
+
+Note:
+  Do not install `mpi4py` or `h5py` from conda for this stack.  Build both with
+  `pip` after the MPI/HDF5 modules are loaded so they link against Dane's
+  MVAPICH2 and parallel HDF5 libraries.
+  `yt` is required for slice plotting.  If you only want FFT/spectra, you can
+  run `main.py ... --skip-slice` without `yt`.
+
+
+--------------------------------------------------------------------------------
+2. Load modules
+--------------------------------------------------------------------------------
+
+Use the same stack for build and run:
+
+  module --force purge
+  module load StdEnv
+  module load gcc/13.3.1
+  module load mvapich2/2.3.7
+  module load hdf5-parallel/1.14.0
+  module load fftw/3.3.10
+  module load cmake/3.30.5
+
+
+--------------------------------------------------------------------------------
+3. Build mpi4py and MPI-enabled h5py
+--------------------------------------------------------------------------------
+
+  source /g/g11/zendejas/anaconda3/etc/profile.d/conda.sh
+  conda activate heffte-py-dane
+
+  export MPICC=$(which mpicc)
+  export MPICXX=$(which mpicxx)
+  export HDF5_DIR=$(dirname $(dirname $(which h5pcc)))
+
+  python -m pip install --upgrade pip setuptools wheel
+  python -m pip uninstall -y mpi4py h5py
+  python -m pip install --no-cache-dir --force-reinstall \
+    --no-build-isolation --no-binary=mpi4py mpi4py
+
+  env CC=${MPICC} \
+      HDF5_MPI=ON \
+      HDF5_DIR=${HDF5_DIR} \
+      python -m pip install --no-cache-dir --force-reinstall \
+      --no-build-isolation --no-binary=h5py h5py
+
+Verify:
+
+  python -c "import mpi4py, mpi4py.MPI as MPI; print('mpi4py =', mpi4py.__version__); print(MPI.Get_library_version().splitlines()[0])"
+  ldd $(python -c "import mpi4py.MPI as m; print(m.__file__)") | egrep 'mpi|mpich|mvapich'
+  python -c "import h5py; print('h5py =', h5py.__version__); print('h5py mpi =', h5py.get_config().mpi)"
+  ldd $(python -c "import h5py.h5 as h; print(h.__file__)") | egrep 'mpi|mpich|mvapich|hdf5'
+
+Expected:
+  - `mpi4py` reports MVAPICH2 2.3.7
+  - `h5py.get_config().mpi` reports `True`
+  - both `mpi4py` and `h5py` resolve to the MVAPICH2 and parallel HDF5 libraries
+    under `/usr/tce/packages/...`
+
+
+--------------------------------------------------------------------------------
+4. Build HeFFTe
+--------------------------------------------------------------------------------
+
+Install HeFFTe in a writable path under `/p/lustre1/zendejas`:
+
+  cd /p/lustre1/zendejas
+  mkdir -p third_party
+
+  export HEFFTE_ROOT=/p/lustre1/zendejas/third_party/heffte
+  export HEFFTE_BUILD=/p/lustre1/zendejas/third_party/heffte/build
+  export HEFFTE_INSTALL=/p/lustre1/zendejas/third_party/heffte/install
+
+  export MPICC=$(which mpicc)
+  export MPICXX=$(which mpicxx)
+  export PYTHON_EXE=$(which python)
+  export FFTW_ROOT=$(pkg-config --variable=prefix fftw3 2>/dev/null || dirname "$(dirname "$(which fftw-wisdom)")")
+
+  git clone --depth 1 https://github.com/icl-utk-edu/heffte.git ${HEFFTE_ROOT}
+
+  cmake -S ${HEFFTE_ROOT} -B ${HEFFTE_BUILD} \
+    -D CMAKE_BUILD_TYPE=Release \
+    -D BUILD_SHARED_LIBS=ON \
+    -D CMAKE_INSTALL_PREFIX=${HEFFTE_INSTALL} \
+    -D CMAKE_C_COMPILER=${MPICC} \
+    -D CMAKE_CXX_COMPILER=${MPICXX} \
+    -D FFTW_ROOT=${FFTW_ROOT} \
+    -D Heffte_ENABLE_FFTW=ON \
+    -D Heffte_ENABLE_PYTHON=ON \
+    -D Python_EXECUTABLE=${PYTHON_EXE}
+
+  cmake --build ${HEFFTE_BUILD} -j8
+  cmake --install ${HEFFTE_BUILD}
+
+Exports:
+
+  export PYTHONPATH=/p/lustre1/zendejas/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
+  export LD_LIBRARY_PATH=/p/lustre1/zendejas/third_party/heffte/install/lib64:/p/lustre1/zendejas/third_party/heffte/install/lib:/usr/tce/packages/mvapich2/mvapich2-2.3.7-gcc-13.3.1/lib:${LD_LIBRARY_PATH:-}
+
+Verify:
+
+  python -c "import heffte; print('HeFFTe =', heffte.__version__)"
+  python -c "import heffte; print('FFTW enabled =', heffte.heffte_config.enable_fftw)"
+  python -c "import heffte; print('libheffte path =', heffte.heffte_config.libheffte_path)"
+  python -c "import h5py; print('h5py mpi =', h5py.get_config().mpi)"
+  python -c "import yt; print('yt =', yt.__version__)"
+
+
+--------------------------------------------------------------------------------
+5. One-time conda activation hook
+--------------------------------------------------------------------------------
+
+To avoid retyping the HeFFTe `PYTHONPATH` and `LD_LIBRARY_PATH` exports every
+time, install this one-time activation hook while `heffte-py-dane` is active:
+
+  conda activate heffte-py-dane
+  mkdir -p "$CONDA_PREFIX/etc/conda/activate.d"
+  cat > "$CONDA_PREFIX/etc/conda/activate.d/heffte.sh" <<'EOF'
+  export PYTHONPATH=/p/lustre1/zendejas/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
+  export LD_LIBRARY_PATH=/p/lustre1/zendejas/third_party/heffte/install/lib64:/p/lustre1/zendejas/third_party/heffte/install/lib:/usr/tce/packages/mvapich2/mvapich2-2.3.7-gcc-13.3.1/lib:${LD_LIBRARY_PATH:-}
+  EOF
+
+After that, each new shell only needs:
+
+  module --force purge
+  module load StdEnv
+  module load gcc/13.3.1
+  module load mvapich2/2.3.7
+  module load hdf5-parallel/1.14.0
+  module load fftw/3.3.10
+  module load cmake/3.30.5
+  source /g/g11/zendejas/anaconda3/etc/profile.d/conda.sh
+  conda activate heffte-py-dane
+
+
+--------------------------------------------------------------------------------
+6. One-time setup script
+--------------------------------------------------------------------------------
+
+This script is for the initial bootstrap only.  It creates the conda env,
+rebuilds `mpi4py` and `h5py`, builds HeFFTe, and installs the one-time conda
+activation hook.  You do not run this before every job.
+
+  #!/bin/bash
+  set -euo pipefail
+
+  module --force purge
+  module load StdEnv
+  module load gcc/13.3.1
+  module load mvapich2/2.3.7
+  module load hdf5-parallel/1.14.0
+  module load fftw/3.3.10
+  module load cmake/3.30.5
+
+  source /g/g11/zendejas/anaconda3/etc/profile.d/conda.sh
+
+  conda create -y -n heffte-py-dane \
+    python=3.11 \
+    pip \
+    numpy \
+    scipy \
+    matplotlib \
+    pandas \
+    yt \
+    cython \
+    cmake \
+    ninja \
+    pkg-config \
+    git
+
+  conda activate heffte-py-dane
+
+  export MPICC=$(which mpicc)
+  export MPICXX=$(which mpicxx)
+  export HDF5_DIR=$(dirname $(dirname $(which h5pcc)))
+
+  python -m pip install --upgrade pip setuptools wheel
+  python -m pip uninstall -y mpi4py h5py
+  python -m pip install --no-cache-dir --force-reinstall \
+    --no-build-isolation --no-binary=mpi4py mpi4py
+
+  env CC=${MPICC} \
+      HDF5_MPI=ON \
+      HDF5_DIR=${HDF5_DIR} \
+      python -m pip install --no-cache-dir --force-reinstall \
+      --no-build-isolation --no-binary=h5py h5py
+
+  cd /p/lustre1/zendejas
+  mkdir -p third_party
+
+  export HEFFTE_ROOT=/p/lustre1/zendejas/third_party/heffte
+  export HEFFTE_BUILD=/p/lustre1/zendejas/third_party/heffte/build
+  export HEFFTE_INSTALL=/p/lustre1/zendejas/third_party/heffte/install
+  export PYTHON_EXE=$(which python)
+  export FFTW_ROOT=$(pkg-config --variable=prefix fftw3 2>/dev/null || dirname "$(dirname "$(which fftw-wisdom)"))
+
+  if [ ! -d "${HEFFTE_ROOT}/.git" ]; then
+    git clone --depth 1 https://github.com/icl-utk-edu/heffte.git "${HEFFTE_ROOT}"
+  fi
+
+  cmake -S "${HEFFTE_ROOT}" -B "${HEFFTE_BUILD}" \
+    -D CMAKE_BUILD_TYPE=Release \
+    -D BUILD_SHARED_LIBS=ON \
+    -D CMAKE_INSTALL_PREFIX="${HEFFTE_INSTALL}" \
+    -D CMAKE_C_COMPILER="${MPICC}" \
+    -D CMAKE_CXX_COMPILER="${MPICXX}" \
+    -D FFTW_ROOT="${FFTW_ROOT}" \
+    -D Heffte_ENABLE_FFTW=ON \
+    -D Heffte_ENABLE_PYTHON=ON \
+    -D Python_EXECUTABLE="${PYTHON_EXE}"
+
+  cmake --build "${HEFFTE_BUILD}" -j8
+  cmake --install "${HEFFTE_BUILD}"
+
+  mkdir -p "$CONDA_PREFIX/etc/conda/activate.d"
+  cat > "$CONDA_PREFIX/etc/conda/activate.d/heffte.sh" <<'EOF'
+  export PYTHONPATH=/p/lustre1/zendejas/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
+  export LD_LIBRARY_PATH=/p/lustre1/zendejas/third_party/heffte/install/lib64:/p/lustre1/zendejas/third_party/heffte/install/lib:/usr/tce/packages/mvapich2/mvapich2-2.3.7-gcc-13.3.1/lib:${LD_LIBRARY_PATH:-}
+  EOF
+
+  export PYTHONPATH=/p/lustre1/zendejas/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
+  export LD_LIBRARY_PATH=/p/lustre1/zendejas/third_party/heffte/install/lib64:/p/lustre1/zendejas/third_party/heffte/install/lib:/usr/tce/packages/mvapich2/mvapich2-2.3.7-gcc-13.3.1/lib:${LD_LIBRARY_PATH:-}
+
+  python -c "import mpi4py, mpi4py.MPI as MPI; print('mpi4py =', mpi4py.__version__); print(MPI.Get_library_version().splitlines()[0])"
+  python -c "import h5py; print('h5py =', h5py.__version__); print('h5py mpi =', h5py.get_config().mpi)"
+  python -c "import yt; print('yt =', yt.__version__)"
+  python -c "import heffte; print('HeFFTe =', heffte.__version__)"
+  python -c "import heffte; print('FFTW enabled =', heffte.heffte_config.enable_fftw)"
+  python -c "import heffte; print('libheffte path =', heffte.heffte_config.libheffte_path)"
+
+
+--------------------------------------------------------------------------------
+7. Interactive shell for normal use
+--------------------------------------------------------------------------------
+
+After the one-time setup is complete, each new shell only needs:
+
+  module --force purge
+  module load StdEnv
+  module load gcc/13.3.1
+  module load mvapich2/2.3.7
+  module load hdf5-parallel/1.14.0
+  module load fftw/3.3.10
+  module load cmake/3.30.5
+  source /g/g11/zendejas/anaconda3/etc/profile.d/conda.sh
+  conda activate heffte-py-dane
+
+That is all.  Do not recreate the conda env for normal work or for jobs.
+Do not run `set -euo pipefail` manually in an interactive shell.  That strict
+mode is used in the batch scripts below, but it can make normal shell work and
+tab-completion fragile.
+
+
+--------------------------------------------------------------------------------
+8. Copy-paste batch script: converter
+--------------------------------------------------------------------------------
+
+This is the script pattern to use for a real batch job after the env already
+exists:
+
+  #!/bin/bash
+  #SBATCH -N 1
+  #SBATCH --ntasks-per-node 36
+  #SBATCH -t 02:00:00
+
+  set -euo pipefail
+
+  module --force purge
+  module load StdEnv
+  module load gcc/13.3.1
+  module load mvapich2/2.3.7
+  module load hdf5-parallel/1.14.0
+  module load fftw/3.3.10
+  module load cmake/3.30.5
+
+  source /g/g11/zendejas/anaconda3/etc/profile.d/conda.sh
+  conda activate heffte-py-dane
+
+  export OMP_NUM_THREADS=1
+  export POSTPROC_REPO=/g/g11/zendejas/turbulence_post_process
+
+  python -c "import h5py; print('h5py mpi =', h5py.get_config().mpi)"
+  python -c "import mpi4py.MPI as m; print('mpi4py OK')"
+  python -c "import heffte; print('HeFFTe =', heffte.__version__)"
+  python -c "import yt; print('yt =', yt.__version__)"
+
+  srun -l -n 36 python "${POSTPROC_REPO}/tools/convert_txt_to_hdf5.py" your_data.txt
+
+
+--------------------------------------------------------------------------------
+9. Copy-paste batch script: spectra
+--------------------------------------------------------------------------------
+
+This is the script pattern to use for large FFT runs after the env already
+exists:
+
+  #!/bin/bash
+  #SBATCH -N 2
+  #SBATCH --ntasks-per-node 36
+  #SBATCH -t 02:00:00
+
+  set -euo pipefail
+
+  module --force purge
+  module load StdEnv
+  module load gcc/13.3.1
+  module load mvapich2/2.3.7
+  module load hdf5-parallel/1.14.0
+  module load fftw/3.3.10
+  module load cmake/3.30.5
+
+  source /g/g11/zendejas/anaconda3/etc/profile.d/conda.sh
+  conda activate heffte-py-dane
+
+  export OMP_NUM_THREADS=1
+  export POSTPROC_REPO=/g/g11/zendejas/turbulence_post_process
+
+  python -c "import h5py, heffte; print('h5py mpi =', h5py.get_config().mpi); print('HeFFTe =', heffte.__version__)"
+  python -c "import yt; print('yt =', yt.__version__)"
+
+  srun -l -n 72 python "${POSTPROC_REPO}/tools/ComputeSpectra.py" your_data.h5 --backend heffte_fftw --no-plot
+
+
+================================================================================
 NOTES
 ================================================================================
 

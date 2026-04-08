@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 
 import h5py
 import numpy as np
@@ -49,6 +50,12 @@ PLANE_AXES = {
     "y": ("z", "x"),
     "z": ("y", "x"),
 }
+
+
+def log_rank0(rank, message):
+    """Print one progress message from rank 0 and flush immediately."""
+    if rank == 0:
+        print(message, flush=True)
 
 
 def split_axis(length, parts):
@@ -611,16 +618,17 @@ def run_visualization(
 
     if rank == 0:
         print()
-        print("-" * 60)
-        print("SLICE RENDERING")
-        print("-" * 60)
-        print(f"Loading {prepared_path} with {comm.Get_size()} MPI ranks...")
-        print(f"Structured domain dimensions: {meta['shape']}")
-        print(f"Rendering {len(requests)} slice(s) for {len(field_specs)} field set(s)...")
+        print("-" * 60, flush=True)
+        print("SLICE RENDERING", flush=True)
+        print("-" * 60, flush=True)
+        print(f"Loading {prepared_path} with {comm.Get_size()} MPI ranks...", flush=True)
+        print(f"Structured domain dimensions: {meta['shape']}", flush=True)
+        print(f"Rendering {len(requests)} slice(s) for {len(field_specs)} field set(s)...", flush=True)
         if save_slice_data:
-            print(f"Saving reusable slice data to: {saved_slice_data_path}")
+            print(f"Saving reusable slice data to: {saved_slice_data_path}", flush=True)
 
     if save_slice_data:
+        init_start = time.perf_counter()
         if rank == 0:
             initialize_slice_data_file(
                 saved_slice_data_path,
@@ -632,17 +640,20 @@ def run_visualization(
                 backend_name,
             )
         comm.Barrier()
+        log_rank0(rank, f"Initialized slice-data file in {time.perf_counter() - init_start:.2f}s")
 
     if needs_vorticity:
-        if rank == 0:
-            print("Computing distributed vorticity field with HeFFTe inverse FFT...")
+        vorticity_start = time.perf_counter()
+        log_rank0(rank, "Computing distributed vorticity field with HeFFTe inverse FFT...")
         vorticity_cache = compute_local_vorticity_fields(prepared_path, meta, comm, backend_name)
+        comm.Barrier()
+        log_rank0(rank, f"Completed distributed vorticity field in {time.perf_counter() - vorticity_start:.2f}s")
 
     outputs = []
     for dataset_name, field_label, latex_label, field_family in field_specs:
-        if rank == 0:
-            print(f"Field: {field_label}")
+        log_rank0(rank, f"Field: {field_label}")
         for axis_name, plane_index, slice_tag in requests:
+            slice_start = time.perf_counter()
             stored_slice_tag = storage_slice_tag(axis_name, slice_tag)
             if field_family == "vorticity":
                 local_bounds, local_plane = extract_plane_from_boxes_local(
@@ -662,6 +673,7 @@ def run_visualization(
                 )
 
             if save_slice_data:
+                write_start = time.perf_counter()
                 if h5py.get_config().mpi:
                     write_slice_plane_parallel(
                         saved_slice_data_path,
@@ -672,12 +684,24 @@ def run_visualization(
                         local_plane,
                         comm,
                     )
+                    comm.Barrier()
                 else:
                     plane = gather_plane(axis_name, local_bounds, local_plane, meta["shape"], comm)
                     if rank == 0:
                         write_slice_plane_serial(saved_slice_data_path, field_label, stored_slice_tag, plane)
                     comm.Barrier()
+                log_rank0(
+                    rank,
+                    f"  Slice-data write finished for {field_label}/{stored_slice_tag} in "
+                    f"{time.perf_counter() - write_start:.2f}s",
+                )
+            gather_start = time.perf_counter()
             plane = gather_plane(axis_name, local_bounds, local_plane, meta["shape"], comm)
+            log_rank0(
+                rank,
+                f"  Gather finished for {field_label}/{stored_slice_tag} in "
+                f"{time.perf_counter() - gather_start:.2f}s",
+            )
 
             rendered_paths = []
             if rank == 0:
@@ -685,6 +709,8 @@ def run_visualization(
                 print(
                     f"  Slice normal={axis_name}, index={plane_index}, "
                     f"coord={coord_value:.6g}, step={meta['step']}, time={meta['time']:.6g}"
+                ,
+                    flush=True,
                 )
                 rendered = output or output_name(
                     output_source_path(prepared_path, dataset_name, field_family),
@@ -693,6 +719,7 @@ def run_visualization(
                     slice_tag,
                     output_format,
                 )
+                render_start = time.perf_counter()
                 rendered_paths = render_plane_image(
                     plane,
                     meta,
@@ -707,9 +734,19 @@ def run_visualization(
                     save_dpi,
                     figure_size,
                 )
+                print(
+                    f"  Render finished for {field_label}/{stored_slice_tag} in "
+                    f"{time.perf_counter() - render_start:.2f}s",
+                    flush=True,
+                )
                 outputs.extend(rendered_paths)
             rendered_paths = comm.bcast(rendered_paths, root=0)
             comm.Barrier()
+            log_rank0(
+                rank,
+                f"  Completed slice {field_label}/{stored_slice_tag} in "
+                f"{time.perf_counter() - slice_start:.2f}s",
+            )
             if rank != 0:
                 outputs.extend(rendered_paths)
 
