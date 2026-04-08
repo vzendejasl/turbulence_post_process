@@ -7,6 +7,7 @@ Example commands:
       1 -> vorticity_magnitude
       2 -> velocity_magnitude
       3 -> the saved scalar field when there is exactly one scalar field
+      q_criterion and r_criterion are available by explicit field name when present
     --slice selects which saved plane to render using:
       1 -> xy_center
       2 -> xy_face
@@ -193,6 +194,31 @@ def _prepare_plot_values(values):
     return np.round(values, decimals=10)
 
 
+def _stored_global_limits(attrs):
+    """Return stored full-volume colorbar limits when present."""
+    if "global_min" not in attrs or "global_max" not in attrs:
+        return None
+    return float(attrs["global_min"]), float(attrs["global_max"])
+
+
+def _resolve_saved_color_limits(saved, vmin=None, vmax=None):
+    """Resolve the colorbar limits used for one saved slice plot."""
+    values = _prepare_plot_values(saved["values"])
+    attrs = saved["attrs"]
+    stored_limits = _stored_global_limits(attrs)
+    if stored_limits is None:
+        data_min = float(np.min(values))
+        data_max = float(np.max(values))
+        source = "gathered 2D slice fallback"
+    else:
+        data_min, data_max = stored_limits
+        source = "stored global 3D limits"
+
+    zmin = float(data_min if vmin is None else vmin)
+    zmax = float(data_max if vmax is None else vmax)
+    return data_min, data_max, zmin, zmax, source
+
+
 def _parse_zoom_window(zoom_window):
     """Parse a zoom window as xmin,xmax or xmin,xmax,ymin,ymax."""
     if zoom_window is None:
@@ -294,17 +320,30 @@ def _apply_normalization(saved, normalize, print_stats=False):
     attrs = dict(saved["attrs"])
     values = values_raw.copy()
     mode = _normalization_mode(normalize, attrs)
+    stored_limits_raw = _stored_global_limits(attrs)
 
     if print_stats:
-        print(f"Raw data min: {float(np.min(values_raw)):.6g}")
-        print(f"Raw data max: {float(np.max(values_raw)):.6g}")
+        if stored_limits_raw is None:
+            print("Stored global 3D colorbar limits: unavailable; falling back to slice-local values.")
+        else:
+            print(f"Stored global 3D colorbar min: {stored_limits_raw[0]:.6g}")
+            print(f"Stored global 3D colorbar max: {stored_limits_raw[1]:.6g}")
 
     if mode == "none":
+        attrs["normalization"] = "none"
+        attrs["normalization_factor"] = 1.0
         if normalize and print_stats:
             print(
                 f"Normalization requested, but field '{attrs.get('field_name', '')}' "
                 "is neither velocity nor vorticity. Leaving values unchanged."
             )
+        if print_stats:
+            if stored_limits_raw is None:
+                print(f"Using 2D slice fallback min: {float(np.min(values)):.6g}")
+                print(f"Using 2D slice fallback max: {float(np.max(values)):.6g}")
+            else:
+                print(f"Using stored global 3D colorbar min: {stored_limits_raw[0]:.6g}")
+                print(f"Using stored global 3D colorbar max: {stored_limits_raw[1]:.6g}")
         normalized = dict(saved)
         normalized["values"] = values
         normalized["attrs"] = attrs
@@ -320,6 +359,9 @@ def _apply_normalization(saved, normalize, print_stats=False):
         attrs["normalization"] = mode
         attrs["normalization_factor"] = normalization_factor
         attrs["normalization_reference_scale"] = reference_scale
+        if stored_limits_raw is not None:
+            attrs["global_min"] = float(stored_limits_raw[0] * normalization_factor)
+            attrs["global_max"] = float(stored_limits_raw[1] * normalization_factor)
 
         if print_stats:
             print("Applying normalization: vorticity")
@@ -328,8 +370,12 @@ def _apply_normalization(saved, normalize, print_stats=False):
             print(f"  Reference scale U0/L = {reference_scale:.6g}")
             print("  Units check: omega has units 1/T and U0/L has units 1/T.")
             print(f"  Normalization uses omega* = omega / (U0/L) = omega * {normalization_factor:.6g}")
-            print(f"Normalized data min: {float(np.min(values)):.6g}")
-            print(f"Normalized data max: {float(np.max(values)):.6g}")
+            if stored_limits_raw is None:
+                print(f"Normalized 2D slice fallback min: {float(np.min(values)):.6g}")
+                print(f"Normalized 2D slice fallback max: {float(np.max(values)):.6g}")
+            else:
+                print(f"Normalized global 3D colorbar min: {float(attrs['global_min']):.6g}")
+                print(f"Normalized global 3D colorbar max: {float(attrs['global_max']):.6g}")
 
         normalized = dict(saved)
         normalized["values"] = values
@@ -345,14 +391,21 @@ def _apply_normalization(saved, normalize, print_stats=False):
         attrs["normalization"] = mode
         attrs["normalization_factor"] = normalization_factor
         attrs["normalization_reference_scale"] = reference_scale
+        if stored_limits_raw is not None:
+            attrs["global_min"] = float(stored_limits_raw[0] * normalization_factor)
+            attrs["global_max"] = float(stored_limits_raw[1] * normalization_factor)
 
         if print_stats:
             print("Applying normalization: velocity")
             print(f"  U0 = {U0:.6g}")
             print("  Units check: |u| has units L/T and U0 has units L/T.")
             print(f"  Normalization uses u* = u / U0 = u * {normalization_factor:.6g}")
-            print(f"Normalized data min: {float(np.min(values)):.6g}")
-            print(f"Normalized data max: {float(np.max(values)):.6g}")
+            if stored_limits_raw is None:
+                print(f"Normalized 2D slice fallback min: {float(np.min(values)):.6g}")
+                print(f"Normalized 2D slice fallback max: {float(np.max(values)):.6g}")
+            else:
+                print(f"Normalized global 3D colorbar min: {float(attrs['global_min']):.6g}")
+                print(f"Normalized global 3D colorbar max: {float(attrs['global_max']):.6g}")
 
         normalized = dict(saved)
         normalized["values"] = values
@@ -607,10 +660,17 @@ def build_comparison_metadata_text(prepared, field_name, slice_tag, normalize, l
     normalization_label = "none"
     if prepared:
         normalization_label = str(prepared[0]["attrs"].get("normalization", "none"))
+    if prepared:
+        contour_min = min(float(item["stored_limits"][0]) for item in prepared)
+        contour_max = max(float(item["stored_limits"][1]) for item in prepared)
+    else:
+        contour_min = contour_max = 0.0
     lines = [
         f"Field: {field_name}",
         f"Slice: {slice_tag}",
         f"Normalization: {normalization_label}",
+        f"Stored global contour min: {contour_min:.6g}",
+        f"Stored global contour max: {contour_max:.6g}",
         "Contour colors:",
     ]
     for index, item in enumerate(prepared):
@@ -704,8 +764,10 @@ def render_saved_slice_contour_matplotlib(
     values = _prepare_plot_values(saved["values"])
     h_coords = np.asarray(saved["coord_horizontal"], dtype=np.float64)
     v_coords = np.asarray(saved["coord_vertical"], dtype=np.float64)
-
-    levels = _resolve_contour_levels(values, vmin, vmax, contour_levels, contour_values)
+    data_min, data_max, _, _, limits_source = _resolve_saved_color_limits(saved, vmin=vmin, vmax=vmax)
+    limits_values = np.array([data_min, data_max], dtype=np.float64)
+    levels = _resolve_contour_levels(limits_values, vmin, vmax, contour_levels, contour_values)
+    print(f"Contour levels use {limits_source}: min={data_min:.6g}, max={data_max:.6g}")
 
     X, Y = np.meshgrid(h_coords, v_coords)
 
@@ -789,8 +851,15 @@ def render_saved_slice_contour_yt(
         normalize=normalize,
         output_tag=f"{slice_tag}_contour",
     )
-    zmin, zmax = _contour_limits(values, vmin, vmax)
-    levels = _resolve_contour_levels(values, vmin, vmax, contour_levels, contour_values)
+    data_min, data_max, zmin, zmax, limits_source = _resolve_saved_color_limits(saved, vmin=vmin, vmax=vmax)
+    levels = _resolve_contour_levels(
+        np.array([data_min, data_max], dtype=np.float64),
+        vmin,
+        vmax,
+        contour_levels,
+        contour_values,
+    )
+    print(f"Contour color scaling uses {limits_source}: min={data_min:.6g}, max={data_max:.6g}")
     grid_x, grid_y, contour_field = _build_contour_grid(
         horizontal_coords,
         vertical_coords,
@@ -1011,6 +1080,7 @@ def render_compared_contours(
                 "attrs": attrs,
                 "saved": saved,
                 "values": values,
+                "stored_limits": _resolve_saved_color_limits(saved)[:2],
                 "horizontal_coords": horizontal_coords,
                 "vertical_coords": vertical_coords,
                 "grid_x": grid_x,
@@ -1023,8 +1093,8 @@ def render_compared_contours(
     if contour_values is not None:
         levels = _parse_contour_values(contour_values)
     else:
-        global_min = min(float(np.min(item["values"])) for item in prepared)
-        global_max = max(float(np.max(item["values"])) for item in prepared)
+        global_min = min(float(item["stored_limits"][0]) for item in prepared)
+        global_max = max(float(item["stored_limits"][1]) for item in prepared)
         levels = _resolve_contour_levels(
             np.array([global_min, global_max], dtype=np.float64),
             vmin,
@@ -1040,10 +1110,11 @@ def render_compared_contours(
         slice_tag,
         saved=base_item["saved"],
     )
-    base_min = float(np.min(base_item["values"]))
-    base_max = float(np.max(base_item["values"]))
+    base_min = float(base_item["stored_limits"][0])
+    base_max = float(base_item["stored_limits"][1])
     zmin = float(base_min if vmin is None else vmin)
     zmax = float(base_max if vmax is None else vmax)
+    print(f"Comparison contour scaling uses stored limits: min={base_min:.6g}, max={base_max:.6g}")
 
     slice_plot = yt.SlicePlot(
         base_dataset,
@@ -1177,12 +1248,12 @@ def render_saved_slice(
         attrs,
         normalize=normalize,
     )
-    data_min = float(np.min(values))
-    data_max = float(np.max(values))
-    print(f"Plot data min: {data_min:.6g}")
-    print(f"Plot data max: {data_max:.6g}")
-    zmin = float(data_min if vmin is None else vmin)
-    zmax = float(data_max if vmax is None else vmax)
+    data_min, data_max, zmin, zmax, limits_source = _resolve_saved_color_limits(saved, vmin=vmin, vmax=vmax)
+    print(f"Colorbar source: {limits_source}")
+    print(f"Colorbar data min: {data_min:.6g}")
+    print(f"Colorbar data max: {data_max:.6g}")
+    print(f"Colorbar min used: {zmin:.6g}")
+    print(f"Colorbar max used: {zmax:.6g}")
 
     slice_plot = yt.SlicePlot(dataset, str(attrs["axis"]), yt_field, center="c", origin="native")
     slice_plot.set_log(yt_field, False)
@@ -1265,6 +1336,9 @@ def print_saved_slice_metadata(slice_file, field_name, slice_tag):
     print(f"Plane coordinate: {float(attrs['plane_coord']):.6g}")
     print(f"Horizontal axis: {attrs['horizontal_axis']}")
     print(f"Vertical axis: {attrs['vertical_axis']}")
+    if "global_min" in attrs and "global_max" in attrs:
+        print(f"Stored global 3D colorbar min: {float(attrs['global_min']):.6g}")
+        print(f"Stored global 3D colorbar max: {float(attrs['global_max']):.6g}")
     print(f"Values shape: {saved['values'].shape}")
 
 
@@ -1383,7 +1457,7 @@ def main():
     parser.add_argument(
         "--field",
         default=None,
-        help="Field selector to replot: 1=vorticity_magnitude, 2=velocity_magnitude, 3=the saved scalar field when unique, or an explicit field name.",
+        help="Field selector to replot: 1=vorticity_magnitude, 2=velocity_magnitude, 3=the saved scalar field when unique, or an explicit field name such as q_criterion or r_criterion.",
     )
     parser.add_argument(
         "--slice",

@@ -208,6 +208,10 @@ Main.py command patterns:
       --slice-field velocity_magnitude \
       --slice-field vorticity_magnitude
 
+  Render Q-criterion and R-criterion slices explicitly:
+    mpirun -n 4 python main.py your_velocity_data.h5 \
+      --slice-field q_criterion
+
   Append scalar fields before slicing:
     mpirun -n 4 python main.py your_velocity_data.h5 \
       --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt \
@@ -261,6 +265,14 @@ Default slice outputs from main.py:
   - xy_face_vorticity_magnitude.pdf
   - yz_face_vorticity_magnitude.pdf
   - zx_face_vorticity_magnitude.pdf
+  - xy_center_q_criterion.pdf
+  - xy_face_q_criterion.pdf
+  - yz_face_q_criterion.pdf
+  - zx_face_q_criterion.pdf
+  - xy_center_r_criterion.pdf
+  - xy_face_r_criterion.pdf
+  - yz_face_r_criterion.pdf
+  - zx_face_r_criterion.pdf
   - one combined slice_data/<base>_slices.h5 file containing all saved slice arrays
 
 Slice output defaults:
@@ -273,13 +285,21 @@ Canonical slice field names:
   - vorticity_magnitude
   - vx, vy, vz
   - wx, wy, wz
+  - q_criterion
+  - r_criterion
 
 The combined slice HDF5 stores:
   - all saved 2D slice arrays
   - horizontal and vertical coordinates for each slice
   - axis, plane index, plane coordinate, step, time, and source-file metadata
+  - stored full-3D global min/max colorbar limits for fields that use global scaling
 
-This lets you replot slices later without recomputing the FFT/vorticity workflow.
+This lets you replot slices later without recomputing the FFT/vorticity/Q-criterion/R-criterion workflow.
+
+Slice colorbar scaling:
+  - velocity_magnitude, vorticity-based fields, q_criterion, r_criterion, and appended scalar fields
+    use the full 3D global min/max by default
+  - vx, vy, and vz continue to fall back to the gathered 2D slice limits
 
 Optional scalar field inputs:
   - pass one or more sampled-data scalar files to main.py by repeating
@@ -300,7 +320,7 @@ Optional scalar field inputs:
       --slice-field density
       --slice-field pressure
       --slice-field temperature
-  - the same default slices are then written for velocity, vorticity, and all appended scalars
+  - the same default slices are then written for velocity, vorticity, Q, R, and all appended scalars
   - current restriction: when using --scalar-file, main.py expects one primary
     velocity input file per run
 
@@ -397,6 +417,11 @@ Slice-postprocessing command patterns:
       --field velocity_magnitude \
       --output my_slice.pdf
 
+  Render Q-criterion explicitly:
+    mpirun -n 4 python tools/visualize_velocity_yt.py your_velocity_data.h5 \
+      --slice z:center \
+      --field q_criterion
+
 Multiple slices in one run:
 
   mpirun -n 4 python tools/visualize_velocity_yt.py data/SampledData0.h5 \
@@ -423,6 +448,8 @@ Useful controls:
       --slice-figsize 10
       --scalar-file path/to/scalar_sampled_data.txt
       --slice-field velocity_magnitude
+      --slice-field q_criterion
+      --slice-field r_criterion
       --slice-field density
   - tools/visualize_velocity_yt.py:
       --format {pdf,png}
@@ -433,6 +460,8 @@ Output:
 
   data/slice_plots/SampledData0_xy_center_velocity_magnitude.pdf
   data/slice_plots/SampledData0_xy_center_vorticity_magnitude.pdf
+  data/slice_plots/SampledData0_xy_center_q_criterion.pdf
+  data/slice_plots/SampledData0_xy_center_r_criterion.pdf
   data/slice_data/SampledData0_slices.h5
 
 Notes:

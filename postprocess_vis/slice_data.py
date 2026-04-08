@@ -8,7 +8,7 @@ import h5py
 import numpy as np
 
 
-SLICE_SCHEMA_VERSION = 1
+SLICE_SCHEMA_VERSION = 2
 
 PLANE_AXES = {
     "x": ("z", "y"),
@@ -178,6 +178,17 @@ def write_slice_plane_serial(filepath, field_label, slice_tag, plane):
     """Write one full plane from rank 0 when MPI-enabled HDF5 is unavailable."""
     with h5py.File(filepath, "r+") as hf:
         hf["slices"][field_label][slice_tag]["values"][:] = np.asarray(plane, dtype=np.float64)
+
+
+def write_slice_limits_serial(filepath, field_label, slice_tag, global_min, global_max):
+    """Persist global 3D colorbar limits for one saved slice and its parent field."""
+    with h5py.File(filepath, "r+") as hf:
+        field_group = hf["slices"][field_label]
+        slice_group = field_group[slice_tag]
+        field_group.attrs["global_min"] = float(global_min)
+        field_group.attrs["global_max"] = float(global_max)
+        slice_group.attrs["global_min"] = float(global_min)
+        slice_group.attrs["global_max"] = float(global_max)
 
 
 def list_available_slices(filepath):
