@@ -166,18 +166,20 @@ def compute_qr_joint_pdf(
     comm,
     bins=256,
 ):
-    """Compute a distributed joint PDF of normalized Q and R invariants."""
-    s12 = 0.5 * (dux_dy + duy_dx)
-    s13 = 0.5 * (dux_dz + duz_dx)
-    s23 = 0.5 * (duy_dz + duz_dy)
-    sij_sij = dux_dx**2 + duy_dy**2 + duz_dz**2 + 2.0 * (s12**2 + s13**2 + s23**2)
-
-    local_count = int(dux_dx.size)
-    global_count = comm.allreduce(local_count, op=MPI.SUM)
-    local_sum_sij_sij = float(np.sum(sij_sij, dtype=np.float64))
-    global_sum_sij_sij = comm.allreduce(local_sum_sij_sij, op=MPI.SUM)
-    avg_sij_sij = global_sum_sij_sij / float(global_count) if global_count > 0 else 0.0
-    sij_sij_scale = max(abs(avg_sij_sij), 1.0e-30)
+    """Compute a distributed joint PDF of Frobenius-normalized Q and R invariants."""
+    # Use the local Frobenius norm of the velocity-gradient tensor to normalize
+    # the invariants at each point, matching the normalized-VGT convention.
+    grad_fro_sq = (
+        dux_dx**2 + dux_dy**2 + dux_dz**2
+        + duy_dx**2 + duy_dy**2 + duy_dz**2
+        + duz_dx**2 + duz_dy**2 + duz_dz**2
+    )
+    local_total_points = int(dux_dx.size)
+    global_total_points = comm.allreduce(local_total_points, op=MPI.SUM)
+    local_max_grad_fro_sq = float(np.max(grad_fro_sq)) if grad_fro_sq.size > 0 else 0.0
+    global_max_grad_fro_sq = comm.allreduce(local_max_grad_fro_sq, op=MPI.MAX)
+    filter_fraction = 1.0e-3
+    filter_threshold = filter_fraction * global_max_grad_fro_sq
 
     div_u = dux_dx + duy_dy + duz_dz
     trace_a2 = (
@@ -192,8 +194,43 @@ def compute_qr_joint_pdf(
         + dux_dz * (duy_dx * duz_dy - duy_dy * duz_dx)
     )
 
-    q_norm_local = q_local / sij_sij_scale
-    r_norm_local = r_local / (sij_sij_scale ** 1.5)
+    if global_max_grad_fro_sq > 1.0e-30:
+        retain_mask = grad_fro_sq >= filter_threshold
+    else:
+        retain_mask = np.ones_like(grad_fro_sq, dtype=bool)
+
+    grad_fro_sq_retained = np.maximum(grad_fro_sq[retain_mask], 1.0e-30)
+    q_norm_local = q_local[retain_mask] / grad_fro_sq_retained
+    r_norm_local = r_local[retain_mask] / (grad_fro_sq_retained ** 1.5)
+
+    local_retained_samples = int(q_norm_local.size)
+    global_retained_samples = comm.allreduce(local_retained_samples, op=MPI.SUM)
+
+    if global_retained_samples == 0:
+        if comm.Get_rank() != 0:
+            return None
+        zero_edges = np.linspace(-1.0, 1.0, int(bins) + 1, dtype=np.float64)
+        zero_centers = 0.5 * (zero_edges[:-1] + zero_edges[1:])
+        zero_hist = np.zeros((int(bins), int(bins)), dtype=np.float64)
+        return {
+            "q_edges": zero_edges,
+            "r_edges": zero_edges,
+            "q_centers": zero_centers,
+            "r_centers": zero_centers,
+            "counts": zero_hist,
+            "joint_pdf": zero_hist,
+            "total_samples": int(global_retained_samples),
+            "total_points": int(global_total_points),
+            "retained_samples": int(global_retained_samples),
+            "retained_fraction": 0.0,
+            "max_grad_fro_sq": float(global_max_grad_fro_sq),
+            "filter_fraction": float(filter_fraction),
+            "filter_threshold": float(filter_threshold),
+            "q_min": -1.0,
+            "q_max": 1.0,
+            "r_min": -1.0,
+            "r_max": 1.0,
+        }
 
     q_local_min = float(np.min(q_norm_local)) if q_norm_local.size > 0 else 0.0
     q_local_max = float(np.max(q_norm_local)) if q_norm_local.size > 0 else 0.0
@@ -232,7 +269,7 @@ def compute_qr_joint_pdf(
     q_centers = 0.5 * (q_edges[:-1] + q_edges[1:])
     r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
     bin_area = np.outer(np.diff(q_edges), np.diff(r_edges))
-    joint_pdf = global_hist / (float(global_count) * bin_area)
+    joint_pdf = global_hist / (float(global_retained_samples) * bin_area)
 
     return {
         "q_edges": q_edges,
@@ -241,8 +278,13 @@ def compute_qr_joint_pdf(
         "r_centers": r_centers,
         "counts": global_hist,
         "joint_pdf": joint_pdf,
-        "avg_sij_sij": float(avg_sij_sij),
-        "total_samples": int(global_count),
+        "total_samples": int(global_retained_samples),
+        "total_points": int(global_total_points),
+        "retained_samples": int(global_retained_samples),
+        "retained_fraction": float(global_retained_samples / float(global_total_points)) if global_total_points > 0 else 0.0,
+        "max_grad_fro_sq": float(global_max_grad_fro_sq),
+        "filter_fraction": float(filter_fraction),
+        "filter_threshold": float(filter_threshold),
         "q_min": float(q_global_min),
         "q_max": float(q_global_max),
         "r_min": float(r_global_min),

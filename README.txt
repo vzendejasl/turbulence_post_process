@@ -303,10 +303,20 @@ The combined slice HDF5 stores:
 This lets you replot slices later without recomputing the FFT/vorticity/Q-criterion/R-criterion workflow.
 
 Q-R joint PDF normalization:
-  - Q is normalized by the domain average <SijSij>
-  - R is normalized by <SijSij>^(3/2)
+  - Q is normalized locally as q_A = Q / |grad(u)|_F^2
+  - R is normalized locally as r_A = R / |grad(u)|_F^3
+  - points are filtered before binning using
+    |grad(u)|_F^2 / max(|grad(u)|_F^2) >= 1e-3
   - the saved HDF5 includes the bin edges, bin centers, raw counts, normalized joint PDF,
-    and the average <SijSij> used for normalization
+    total/retained sample counts, and the Frobenius-norm filter metadata
+  - the default PDF plot uses bounds r_A in [-0.2, 0.2] and q_A in [-0.5, 0.5]
+  - the default colorbar uses log-spaced PDF levels from 1e-3 to 1e2
+  - the PDF plot overlays a magenta contour enclosing the highest-density
+    region that contains 90% of the total probability mass
+  - by default the PDF figure is created with yt's PhasePlot/profile machinery
+  - if yt is unavailable at runtime, the code falls back to the Matplotlib
+    contour renderer automatically
+  - set TURB_POSTPROCESS_QR_PLOT_BACKEND=matplotlib to force the fallback backend
 
 Slice colorbar scaling:
   - velocity_magnitude, vorticity-based fields, q_criterion, r_criterion, and appended scalar fields

@@ -211,6 +211,8 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
     if root:
         print()
         print("Computing distributed Q-R joint PDF...")
+        print("  Normalization: q_A = Q / |grad(u)|_F^2, r_A = R / |grad(u)|_F^3")
+        print("  Filter: |grad(u)|_F^2 / max(|grad(u)|_F^2) >= 1e-3")
 
     dux_dx = backward_field(plan, 1j * KX * vx_k, local_shape)
     dux_dy = backward_field(plan, 1j * KY * vx_k, local_shape)
