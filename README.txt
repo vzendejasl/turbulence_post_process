@@ -303,14 +303,24 @@ The combined slice HDF5 stores:
 This lets you replot slices later without recomputing the FFT/vorticity/Q-criterion/R-criterion workflow.
 
 Q-R joint PDF normalization:
+  - let A = grad(u) be the full velocity-gradient tensor
+  - the code uses the full compressible invariants
+    Q = 0.5 * ((tr(A))^2 - tr(A^2))
+    R = -det(A)
+  - the Frobenius norm used for nondimensionalization is
+    |A|_F = sqrt(tr(A^T A))
   - Q is normalized locally as q_A = Q / |grad(u)|_F^2
   - R is normalized locally as r_A = R / |grad(u)|_F^3
+  - the plotted axes are labeled with these nondimensional quantities:
+    x-axis: r_A = R / |grad(u)|_F^3
+    y-axis: q_A = Q / |grad(u)|_F^2
   - points are filtered before binning using
     |grad(u)|_F^2 / max(|grad(u)|_F^2) >= 1e-3
   - the saved HDF5 includes the bin edges, bin centers, raw counts, normalized joint PDF,
     total/retained sample counts, and the Frobenius-norm filter metadata
   - the default PDF plot uses bounds r_A in [-0.2, 0.2] and q_A in [-0.5, 0.5]
   - the default colorbar uses log-spaced PDF levels from 1e-3 to 1e2
+  - the PDF plot overlays black enclosed-probability contours at 5%, 15%, 25%, and 50%
   - the PDF plot overlays a magenta contour enclosing the highest-density
     region that contains 90% of the total probability mass
   - by default the PDF figure is created with yt's PhasePlot/profile machinery

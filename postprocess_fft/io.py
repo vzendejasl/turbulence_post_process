@@ -334,6 +334,7 @@ def _qr_plot_settings():
         "colorbar_vmin": 1.0e-3,
         "colorbar_vmax": 1.0e2,
         "cmap": "RdBu_r",
+        "line_contour_probabilities": (0.05, 0.15, 0.25, 0.50),
     }
 
 
@@ -356,7 +357,22 @@ def _qr_enclosed_probability_contour_level(joint_pdf, q_edges, r_edges, enclosed
     return float(sorted_pdf[contour_index])
 
 
-def _print_qr_plot_summary(output_path, backend_name, settings, contour_90_level):
+def _qr_enclosed_probability_contour_levels(joint_pdf, q_edges, r_edges, enclosed_probabilities):
+    """Return contour levels for a sequence of enclosed-probability targets."""
+    levels = {}
+    for probability in enclosed_probabilities:
+        level = _qr_enclosed_probability_contour_level(
+            joint_pdf,
+            q_edges,
+            r_edges,
+            enclosed_probability=probability,
+        )
+        if level is not None:
+            levels[float(probability)] = float(level)
+    return levels
+
+
+def _print_qr_plot_summary(output_path, backend_name, settings, line_contour_levels, contour_90_level):
     """Print a consistent summary of the Q-R plot that was written."""
     print(f"Saved Q-R joint PDF plot: {output_path}")
     print(f"  Plot backend: {backend_name}")
@@ -369,6 +385,12 @@ def _print_qr_plot_summary(output_path, backend_name, settings, contour_90_level
         "  Colorbar scale: "
         f"log10 joint PDF from {settings['colorbar_vmin']:.0e} to {settings['colorbar_vmax']:.0e}"
     )
+    if line_contour_levels:
+        formatted = ", ".join(
+            f"{int(round(probability * 100.0))}% -> {level:.6e}"
+            for probability, level in sorted(line_contour_levels.items())
+        )
+        print(f"  Enclosed-probability contour levels: {formatted}")
     if contour_90_level is not None:
         print(f"  90% probability contour level: {contour_90_level:.6e}")
 
@@ -389,6 +411,12 @@ def _plot_qr_joint_pdf_matplotlib(qr_result, output_path):
         21,
         dtype=np.float64,
     )
+    line_contour_levels = _qr_enclosed_probability_contour_levels(
+        joint_pdf,
+        q_edges,
+        r_edges,
+        settings["line_contour_probabilities"],
+    )
     contour_90_level = _qr_enclosed_probability_contour_level(joint_pdf, q_edges, r_edges)
     pdf_to_plot = np.ma.masked_less_equal(joint_pdf, 0.0)
     r_curve = np.linspace(-settings["r_plot_limit"], settings["r_plot_limit"], 800, dtype=np.float64)
@@ -405,15 +433,16 @@ def _plot_qr_joint_pdf_matplotlib(qr_result, output_path):
             norm=LogNorm(vmin=settings["colorbar_vmin"], vmax=settings["colorbar_vmax"]),
             extend="both",
         )
-        ax.contour(
-            r_centers,
-            q_centers,
-            pdf_to_plot,
-            levels=contour_levels[::2],
-            colors="k",
-            linewidths=0.4,
-            alpha=0.35,
-        )
+        if line_contour_levels:
+            ax.contour(
+                r_centers,
+                q_centers,
+                pdf_to_plot,
+                levels=np.asarray(sorted(line_contour_levels.values()), dtype=np.float64),
+                colors="k",
+                linewidths=0.9,
+                alpha=0.8,
+            )
         ax.plot(r_curve, q_curve, color="black", linewidth=1.5)
         if contour_90_level is not None:
             # The magenta contour marks the highest-density region containing
@@ -438,7 +467,7 @@ def _plot_qr_joint_pdf_matplotlib(qr_result, output_path):
         fig.savefig(output_path)
         plt.close(fig)
 
-    _print_qr_plot_summary(output_path, "matplotlib", settings, contour_90_level)
+    _print_qr_plot_summary(output_path, "matplotlib", settings, line_contour_levels, contour_90_level)
     return output_path
 
 
@@ -453,6 +482,12 @@ def _plot_qr_joint_pdf_yt(qr_result, output_path):
     q_centers = np.asarray(qr_result["q_centers"], dtype=np.float64)
     r_centers = np.asarray(qr_result["r_centers"], dtype=np.float64)
     joint_pdf = np.asarray(qr_result["joint_pdf"], dtype=np.float64)
+    line_contour_levels = _qr_enclosed_probability_contour_levels(
+        joint_pdf,
+        q_edges,
+        r_edges,
+        settings["line_contour_probabilities"],
+    )
     contour_90_level = _qr_enclosed_probability_contour_level(joint_pdf, q_edges, r_edges)
 
     rr, qq = np.meshgrid(r_centers, q_centers)
@@ -502,6 +537,16 @@ def _plot_qr_joint_pdf_yt(qr_result, output_path):
     r_curve = np.linspace(-settings["r_plot_limit"], settings["r_plot_limit"], 800, dtype=np.float64)
     q_curve = -np.cbrt((27.0 / 4.0) * (r_curve**2))
     ax.plot(r_curve, q_curve, color="black", linewidth=1.5)
+    if line_contour_levels:
+        ax.contour(
+            r_centers,
+            q_centers,
+            np.ma.masked_less_equal(joint_pdf, 0.0),
+            levels=np.asarray(sorted(line_contour_levels.values()), dtype=np.float64),
+            colors="k",
+            linewidths=0.9,
+            alpha=0.8,
+        )
     if contour_90_level is not None:
         ax.contour(
             r_centers,
@@ -518,7 +563,7 @@ def _plot_qr_joint_pdf_yt(qr_result, output_path):
     plot.figure.savefig(output_path, bbox_inches="tight")
     plt.close(plot.figure)
 
-    _print_qr_plot_summary(output_path, "yt", settings, contour_90_level)
+    _print_qr_plot_summary(output_path, "yt", settings, line_contour_levels, contour_90_level)
     return output_path
 
 
