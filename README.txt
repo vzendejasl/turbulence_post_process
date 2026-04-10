@@ -26,6 +26,7 @@ Key workflow:
   3. Run the parallel spectra script on that HDF5 file.
   4. Optionally render one or more slices from the structured HDF5 file.
   5. Save the raw 2D slice data to one combined *_slices.h5 file for later replotting.
+  6. Save a normalized Q-R joint PDF beside the spectra outputs.
 
 Structured HDF5 schema written by tools/convert_txt_to_hdf5.py:
   /grid/x
@@ -208,6 +209,10 @@ Main.py command patterns:
       --slice-field velocity_magnitude \
       --slice-field vorticity_magnitude
 
+  Render Q-criterion and R-criterion slices explicitly:
+    mpirun -n 4 python main.py your_velocity_data.h5 \
+      --slice-field q_criterion
+
   Append scalar fields before slicing:
     mpirun -n 4 python main.py your_velocity_data.h5 \
       --scalar-file density_sampled_data_uniform_interpolated_cycle_0.txt \
@@ -241,6 +246,7 @@ Files written by the integrated pipeline:
   - Dedalus field-output input writes one structured snapshot named <input>_writeXXXXX.h5
     next to the original field file
   - the FFT spectra .txt and spectra metadata .txt are written next to that .h5 file
+  - a Q-R joint PDF HDF5 file and PDF plot are written next to that .h5 file
   - the slice plots are written under slice_plots/ next to that .h5 file
   - the raw slice data are written under slice_data/ as one combined <base>_slices.h5 file
 
@@ -261,7 +267,19 @@ Default slice outputs from main.py:
   - xy_face_vorticity_magnitude.pdf
   - yz_face_vorticity_magnitude.pdf
   - zx_face_vorticity_magnitude.pdf
+  - xy_center_q_criterion.pdf
+  - xy_face_q_criterion.pdf
+  - yz_face_q_criterion.pdf
+  - zx_face_q_criterion.pdf
+  - xy_center_r_criterion.pdf
+  - xy_face_r_criterion.pdf
+  - yz_face_r_criterion.pdf
+  - zx_face_r_criterion.pdf
   - one combined slice_data/<base>_slices.h5 file containing all saved slice arrays
+
+Default Q-R analysis outputs from the FFT step:
+  - <base>_spectra_qr_joint_pdf.h5
+  - <base>_spectra_qr_joint_pdf.pdf
 
 Slice output defaults:
   - format: pdf
@@ -273,13 +291,47 @@ Canonical slice field names:
   - vorticity_magnitude
   - vx, vy, vz
   - wx, wy, wz
+  - q_criterion
+  - r_criterion
 
 The combined slice HDF5 stores:
   - all saved 2D slice arrays
   - horizontal and vertical coordinates for each slice
   - axis, plane index, plane coordinate, step, time, and source-file metadata
+  - stored full-3D global min/max colorbar limits for fields that use global scaling
 
-This lets you replot slices later without recomputing the FFT/vorticity workflow.
+This lets you replot slices later without recomputing the FFT/vorticity/Q-criterion/R-criterion workflow.
+
+Q-R joint PDF normalization:
+  - let A = grad(u) be the full velocity-gradient tensor
+  - the code uses the full compressible invariants
+    Q = 0.5 * ((tr(A))^2 - tr(A^2))
+    R = -det(A)
+  - the Frobenius norm used for nondimensionalization is
+    |A|_F = sqrt(tr(A^T A))
+  - Q is normalized locally as q_A = Q / |grad(u)|_F^2
+  - R is normalized locally as r_A = R / |grad(u)|_F^3
+  - the plotted axes are labeled with these nondimensional quantities:
+    x-axis: r_A = R / |grad(u)|_F^3
+    y-axis: q_A = Q / |grad(u)|_F^2
+  - points are filtered before binning using
+    |grad(u)|_F^2 / max(|grad(u)|_F^2) >= 1e-3
+  - the saved HDF5 includes the bin edges, bin centers, raw counts, normalized joint PDF,
+    total/retained sample counts, and the Frobenius-norm filter metadata
+  - the default PDF plot uses bounds r_A in [-0.2, 0.2] and q_A in [-0.5, 0.5]
+  - the default colorbar uses log-spaced PDF levels from 1e-3 to 1e2
+  - the PDF plot overlays black enclosed-probability contours at 5%, 15%, 25%, and 50%
+  - the PDF plot overlays a magenta contour enclosing the highest-density
+    region that contains 90% of the total probability mass
+  - by default the PDF figure is created with yt's PhasePlot/profile machinery
+  - if yt is unavailable at runtime, the code falls back to the Matplotlib
+    contour renderer automatically
+  - set TURB_POSTPROCESS_QR_PLOT_BACKEND=matplotlib to force the fallback backend
+
+Slice colorbar scaling:
+  - velocity_magnitude, vorticity-based fields, q_criterion, r_criterion, and appended scalar fields
+    use the full 3D global min/max by default
+  - vx, vy, and vz continue to fall back to the gathered 2D slice limits
 
 Optional scalar field inputs:
   - pass one or more sampled-data scalar files to main.py by repeating
@@ -300,7 +352,7 @@ Optional scalar field inputs:
       --slice-field density
       --slice-field pressure
       --slice-field temperature
-  - the same default slices are then written for velocity, vorticity, and all appended scalars
+  - the same default slices are then written for velocity, vorticity, Q, R, and all appended scalars
   - current restriction: when using --scalar-file, main.py expects one primary
     velocity input file per run
 
@@ -397,6 +449,11 @@ Slice-postprocessing command patterns:
       --field velocity_magnitude \
       --output my_slice.pdf
 
+  Render Q-criterion explicitly:
+    mpirun -n 4 python tools/visualize_velocity_yt.py your_velocity_data.h5 \
+      --slice z:center \
+      --field q_criterion
+
 Multiple slices in one run:
 
   mpirun -n 4 python tools/visualize_velocity_yt.py data/SampledData0.h5 \
@@ -423,6 +480,8 @@ Useful controls:
       --slice-figsize 10
       --scalar-file path/to/scalar_sampled_data.txt
       --slice-field velocity_magnitude
+      --slice-field q_criterion
+      --slice-field r_criterion
       --slice-field density
   - tools/visualize_velocity_yt.py:
       --format {pdf,png}
@@ -433,6 +492,8 @@ Output:
 
   data/slice_plots/SampledData0_xy_center_velocity_magnitude.pdf
   data/slice_plots/SampledData0_xy_center_vorticity_magnitude.pdf
+  data/slice_plots/SampledData0_xy_center_q_criterion.pdf
+  data/slice_plots/SampledData0_xy_center_r_criterion.pdf
   data/slice_data/SampledData0_slices.h5
 
 Notes:

@@ -19,11 +19,13 @@ from postprocess_fft.transform import backward_field
 from postprocess_fft.transform import forward_field
 from postprocess_fft.transform import get_backend
 from postprocess_fft.transform import local_wavenumber_mesh
+from postprocess_fft.common import global_range
 from postprocess_fft.common import heffte
 from postprocess_lib.prepare import ensure_structured_h5
 from postprocess_vis.slice_data import default_slice_data_output
 from postprocess_vis.slice_data import initialize_slice_data_file
 from postprocess_vis.slice_data import storage_slice_tag
+from postprocess_vis.slice_data import write_slice_limits_serial
 from postprocess_vis.slice_data import write_slice_plane_parallel
 from postprocess_vis.slice_data import write_slice_plane_serial
 
@@ -37,6 +39,8 @@ BUILTIN_FIELD_MAP = {
     "wx": ("omega_x", "wx", r"$\omega_1$", "vorticity"),
     "wy": ("omega_y", "wy", r"$\omega_2$", "vorticity"),
     "wz": ("omega_z", "wz", r"$\omega_3$", "vorticity"),
+    "q_criterion": ("q_criterion", "q_criterion", r"$Q$", "qcriterion"),
+    "r_criterion": ("r_criterion", "r_criterion", r"$R$", "rcriterion"),
 }
 
 PLANE_NAMES = {
@@ -138,6 +142,13 @@ def open_h5_for_parallel_read(filepath, comm):
     if h5py.get_config().mpi:
         return h5py.File(filepath, "r", driver="mpio", comm=comm)
     return h5py.File(filepath, "r")
+
+
+def read_structured_local_dataset(filepath, dataset_name, local_box, comm):
+    """Read one rank-local dataset block from the structured HDF5 file."""
+    sx, sy, sz = box_slices(local_box)
+    with open_h5_for_parallel_read(filepath, comm) as hf:
+        return np.asarray(hf["fields"][dataset_name][sx, sy, sz], dtype=np.float64)
 
 
 def parse_slice_spec(spec):
@@ -321,8 +332,16 @@ def extract_plane_parallel(filepath, dataset_name, axis, plane_index, meta, comm
     return gather_plane(axis, local_bounds, local_plane, meta["shape"], comm)
 
 
-def compute_local_vorticity_fields(filepath, meta, comm, backend_name):
-    """Compute distributed real-space vorticity components with HeFFTe."""
+def compute_local_derived_fields(
+    filepath,
+    meta,
+    comm,
+    backend_name,
+    include_vorticity=False,
+    include_qcriterion=False,
+    include_rcriterion=False,
+):
+    """Compute distributed real-space derived velocity fields with HeFFTe."""
     shape = meta["shape"]
     proc_grid = choose_proc_grid(shape, comm.Get_size())
     boxes = build_boxes(shape, proc_grid)
@@ -338,21 +357,78 @@ def compute_local_vorticity_fields(filepath, meta, comm, backend_name):
     vy_k = forward_field(plan, local_vy).reshape(local_shape, order="C")
     vz_k = forward_field(plan, local_vz).reshape(local_shape, order="C")
 
-    omega_x_k = 1j * (KY * vz_k - KZ * vy_k)
-    omega_y_k = 1j * (KZ * vx_k - KX * vz_k)
-    omega_z_k = 1j * (KX * vy_k - KY * vx_k)
-
-    omega_x = backward_field(plan, omega_x_k, local_shape)
-    omega_y = backward_field(plan, omega_y_k, local_shape)
-    omega_z = backward_field(plan, omega_z_k, local_shape)
-
-    return {
+    derived_fields = {
         "local_box": local_box,
-        "omega_x": omega_x,
-        "omega_y": omega_y,
-        "omega_z": omega_z,
-        "vorticity_magnitude": np.sqrt(omega_x**2 + omega_y**2 + omega_z**2),
     }
+
+    if include_vorticity:
+        omega_x_k = 1j * (KY * vz_k - KZ * vy_k)
+        omega_y_k = 1j * (KZ * vx_k - KX * vz_k)
+        omega_z_k = 1j * (KX * vy_k - KY * vx_k)
+
+        omega_x = backward_field(plan, omega_x_k, local_shape)
+        omega_y = backward_field(plan, omega_y_k, local_shape)
+        omega_z = backward_field(plan, omega_z_k, local_shape)
+
+        derived_fields["omega_x"] = omega_x
+        derived_fields["omega_y"] = omega_y
+        derived_fields["omega_z"] = omega_z
+        derived_fields["vorticity_magnitude"] = np.sqrt(omega_x**2 + omega_y**2 + omega_z**2)
+
+    if include_qcriterion or include_rcriterion:
+        dux_dx = backward_field(plan, 1j * KX * vx_k, local_shape)
+        dux_dy = backward_field(plan, 1j * KY * vx_k, local_shape)
+        dux_dz = backward_field(plan, 1j * KZ * vx_k, local_shape)
+        duy_dx = backward_field(plan, 1j * KX * vy_k, local_shape)
+        duy_dy = backward_field(plan, 1j * KY * vy_k, local_shape)
+        duy_dz = backward_field(plan, 1j * KZ * vy_k, local_shape)
+        duz_dx = backward_field(plan, 1j * KX * vz_k, local_shape)
+        duz_dy = backward_field(plan, 1j * KY * vz_k, local_shape)
+        duz_dz = backward_field(plan, 1j * KZ * vz_k, local_shape)
+
+        div_u = dux_dx + duy_dy + duz_dz
+        trace_grad_u_sq = (
+            dux_dx * dux_dx + dux_dy * duy_dx + dux_dz * duz_dx
+            + duy_dx * dux_dy + duy_dy * duy_dy + duy_dz * duz_dy
+            + duz_dx * dux_dz + duz_dy * duy_dz + duz_dz * duz_dz
+        )
+        if include_qcriterion:
+            derived_fields["q_criterion"] = 0.5 * (div_u**2 - trace_grad_u_sq)
+
+        if include_rcriterion:
+            # Full compressible third invariant using the same sign convention
+            # as the current Q definition: P = -tr(grad_u), Q = I2, R = -I3.
+            det_grad_u = (
+                dux_dx * (duy_dy * duz_dz - duy_dz * duz_dy)
+                - dux_dy * (duy_dx * duz_dz - duy_dz * duz_dx)
+                + dux_dz * (duy_dx * duz_dy - duy_dy * duz_dx)
+            )
+            derived_fields["r_criterion"] = -det_grad_u
+
+    return derived_fields
+
+
+def compute_global_field_limits(filepath, dataset_name, field_family, meta, comm, derived_cache=None):
+    """Return the full 3D min/max for fields that should use global color scaling."""
+    shape = meta["shape"]
+    proc_grid = choose_proc_grid(shape, comm.Get_size())
+    boxes = build_boxes(shape, proc_grid)
+    local_box = boxes[comm.Get_rank()]
+
+    if dataset_name == "velocity_magnitude":
+        local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
+        local_values = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
+    elif dataset_name in {"vorticity_magnitude", "omega_x", "omega_y", "omega_z", "q_criterion", "r_criterion"}:
+        if derived_cache is None or dataset_name not in derived_cache:
+            raise ValueError(f"Derived cache is missing required field '{dataset_name}'.")
+        local_values = np.asarray(derived_cache[dataset_name], dtype=np.float64)
+    elif field_family == "scalar":
+        local_values = read_structured_local_dataset(filepath, dataset_name, local_box, comm)
+    else:
+        return None
+
+    global_min, global_max = global_range(local_values, comm)
+    return float(global_min), float(global_max)
 
 
 def output_stem(source_path, field_label):
@@ -378,6 +454,48 @@ def output_name(data_file, field_label, axis, slice_tag, output_format):
     if slice_tag in {"xy_center", "xy_face", "yz_face", "zx_face"}:
         return os.path.join(output_dir, f"{base}_{slice_tag}.{output_format}")
     return os.path.join(output_dir, f"{base}_{PLANE_NAMES[axis]}_{slice_tag}.{output_format}")
+
+
+def slice_metadata_log_path(output_path):
+    """Return the append-only metadata log path for one slice_plots directory."""
+    directory = os.path.dirname(os.path.abspath(output_path))
+    return os.path.join(directory, "slice_render_metadata.txt")
+
+
+def append_slice_metadata_log(
+    metadata_path,
+    source_file,
+    field_label,
+    axis,
+    plane_index,
+    plane_coord,
+    step,
+    time_value,
+    plane_min,
+    plane_max,
+    colorbar_min,
+    colorbar_max,
+    output_path,
+):
+    """Append one rendered-slice metadata block to the shared slice-plots log."""
+    lines = [
+        "=" * 72,
+        f"Source file: {os.path.abspath(source_file)}",
+        f"Field: {field_label}",
+        f"Axis: {axis}",
+        f"Plane index: {int(plane_index)}",
+        f"Plane coordinate: {float(plane_coord):.16e}",
+        f"Step: {step}",
+        f"Time: {float(time_value):.16e}",
+        f"Slice 2D min: {float(plane_min):.16e}",
+        f"Slice 2D max: {float(plane_max):.16e}",
+        f"Global 3D colorbar min: {float(colorbar_min):.16e}",
+        f"Global 3D colorbar max: {float(colorbar_max):.16e}",
+        f"Output: {os.path.abspath(output_path)}",
+        "",
+    ]
+    with open(metadata_path, "a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines))
 
 
 def output_source_path(data_file, dataset_name, field_family):
@@ -451,6 +569,7 @@ def render_plane_image(
     plot,
     save_dpi,
     figure_size,
+    colorbar_limits=None,
 ):
     """Render one plane to disk on rank 0 with yt SlicePlot."""
     import yt
@@ -458,8 +577,18 @@ def render_plane_image(
     plane = np.asarray(plane, dtype=np.float64).copy()
     plane[np.abs(plane) < 1.0e-12] = 0.0
     plane = np.round(plane, decimals=10)
-    zmin = float(np.min(plane))
-    zmax = float(np.max(plane))
+    plane_min = float(np.min(plane))
+    plane_max = float(np.max(plane))
+    # Slice images now default to the full 3D field limits so colorbars stay
+    # comparable across different slice locations for the same variable.
+    if colorbar_limits is None:
+        zmin = plane_min
+        zmax = plane_max
+        print(f"  Using gathered 2D slice limits for colorbar: min={zmin:.6g}, max={zmax:.6g}", flush=True)
+    else:
+        zmin, zmax = (float(colorbar_limits[0]), float(colorbar_limits[1]))
+        print(f"  Using stored global 3D limits for colorbar: min={zmin:.6g}, max={zmax:.6g}", flush=True)
+        print(f"  Gathered 2D slice stats: min={plane_min:.6g}, max={plane_max:.6g}", flush=True)
     dataset, yt_field = build_yt_slice_dataset(plane, meta, axis, plane_index, field_label)
     slice_plot = yt.SlicePlot(dataset, axis, yt_field, center="c", origin="native")
     slice_plot.set_log(yt_field, False)
@@ -488,7 +617,13 @@ def render_plane_image(
         print(f"Saved: {saved_path}")
     if plot:
         slice_plot.show()
-    return list(saved_paths)
+    return {
+        "saved_paths": list(saved_paths),
+        "plane_min": plane_min,
+        "plane_max": plane_max,
+        "colorbar_min": zmin,
+        "colorbar_max": zmax,
+    }
 
 
 # Legacy matplotlib renderer reference kept for future use.
@@ -569,9 +704,12 @@ def resolve_requested_fields(filepath, field_names):
     field_lookup = available_field_specs(filepath)
     if field_names:
         requested_fields = list(field_names)
+        if "q_criterion" in requested_fields and "r_criterion" not in requested_fields:
+            q_index = requested_fields.index("q_criterion")
+            requested_fields.insert(q_index + 1, "r_criterion")
     else:
         scalar_fields = [name for name, spec in field_lookup.items() if spec[3] == "scalar"]
-        requested_fields = ["velocity_magnitude", "vorticity_magnitude", *scalar_fields]
+        requested_fields = ["velocity_magnitude", "vorticity_magnitude", "q_criterion", "r_criterion", *scalar_fields]
 
     missing = [name for name in requested_fields if name not in field_lookup]
     if missing:
@@ -614,7 +752,9 @@ def run_visualization(
         raise ValueError("--output can only be used when rendering a single slice.")
 
     needs_vorticity = any(spec[3] == "vorticity" for spec in field_specs)
-    vorticity_cache = None
+    needs_qcriterion = any(spec[3] == "qcriterion" for spec in field_specs)
+    needs_rcriterion = any(spec[3] == "rcriterion" for spec in field_specs)
+    derived_cache = None
 
     if rank == 0:
         print()
@@ -642,12 +782,30 @@ def run_visualization(
         comm.Barrier()
         log_rank0(rank, f"Initialized slice-data file in {time.perf_counter() - init_start:.2f}s")
 
-    if needs_vorticity:
-        vorticity_start = time.perf_counter()
-        log_rank0(rank, "Computing distributed vorticity field with HeFFTe inverse FFT...")
-        vorticity_cache = compute_local_vorticity_fields(prepared_path, meta, comm, backend_name)
+    if needs_vorticity or needs_qcriterion or needs_rcriterion:
+        derived_start = time.perf_counter()
+        if needs_vorticity:
+            log_rank0(rank, "Computing distributed vorticity field with HeFFTe inverse FFT...")
+        if needs_qcriterion:
+            log_rank0(rank, "Computing distributed Q-criterion field with HeFFTe inverse FFT...")
+        if needs_rcriterion:
+            log_rank0(rank, "Computing distributed R-criterion field with HeFFTe inverse FFT...")
+        derived_cache = compute_local_derived_fields(
+            prepared_path,
+            meta,
+            comm,
+            backend_name,
+            include_vorticity=needs_vorticity,
+            include_qcriterion=needs_qcriterion,
+            include_rcriterion=needs_rcriterion,
+        )
         comm.Barrier()
-        log_rank0(rank, f"Completed distributed vorticity field in {time.perf_counter() - vorticity_start:.2f}s")
+        if needs_vorticity:
+            log_rank0(rank, f"Completed distributed vorticity field in {time.perf_counter() - derived_start:.2f}s")
+        if needs_qcriterion:
+            log_rank0(rank, f"Completed distributed Q-criterion field in {time.perf_counter() - derived_start:.2f}s")
+        if needs_rcriterion:
+            log_rank0(rank, f"Completed distributed R-criterion field in {time.perf_counter() - derived_start:.2f}s")
 
     outputs = []
     # DANE can hang in the legacy MPI slice-data write path for x-normal slices,
@@ -656,14 +814,35 @@ def run_visualization(
     use_legacy_parallel_slice_data_write = False
     for dataset_name, field_label, latex_label, field_family in field_specs:
         log_rank0(rank, f"Field: {field_label}")
+        global_limits = compute_global_field_limits(
+            prepared_path,
+            dataset_name,
+            field_family,
+            meta,
+            comm,
+            derived_cache=derived_cache,
+        )
+        if rank == 0:
+            if global_limits is None:
+                print(
+                    f"  Global 3D colorbar limits are not tracked for {field_label}; "
+                    "falling back to gathered 2D slice limits.",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  Global 3D colorbar limits for {field_label}: "
+                    f"min={global_limits[0]:.6g}, max={global_limits[1]:.6g}",
+                    flush=True,
+                )
         for axis_name, plane_index, slice_tag in requests:
             slice_start = time.perf_counter()
             stored_slice_tag = storage_slice_tag(axis_name, slice_tag)
-            if field_family == "vorticity":
+            if field_family in {"vorticity", "qcriterion", "rcriterion"}:
                 local_bounds, local_plane = extract_plane_from_boxes_local(
                     axis_name,
-                    vorticity_cache["local_box"],
-                    vorticity_cache[dataset_name],
+                    derived_cache["local_box"],
+                    derived_cache[dataset_name],
                     plane_index,
                 )
             else:
@@ -698,11 +877,28 @@ def run_visualization(
                         comm,
                     )
                     comm.Barrier()
+                    if rank == 0 and global_limits is not None:
+                        write_slice_limits_serial(
+                            saved_slice_data_path,
+                            field_label,
+                            stored_slice_tag,
+                            global_limits[0],
+                            global_limits[1],
+                        )
+                    comm.Barrier()
                 else:
                     # Gathered planes are already needed for rank-0 rendering, so
                     # write the reusable slice-data file serially on rank 0.
                     if rank == 0:
                         write_slice_plane_serial(saved_slice_data_path, field_label, stored_slice_tag, plane)
+                        if global_limits is not None:
+                            write_slice_limits_serial(
+                                saved_slice_data_path,
+                                field_label,
+                                stored_slice_tag,
+                                global_limits[0],
+                                global_limits[1],
+                            )
                     comm.Barrier()
                 log_rank0(
                     rank,
@@ -719,15 +915,16 @@ def run_visualization(
                 ,
                     flush=True,
                 )
+                source_path = output_source_path(prepared_path, dataset_name, field_family)
                 rendered = output or output_name(
-                    output_source_path(prepared_path, dataset_name, field_family),
+                    source_path,
                     field_label,
                     axis_name,
                     slice_tag,
                     output_format,
                 )
                 render_start = time.perf_counter()
-                rendered_paths = render_plane_image(
+                rendered_info = render_plane_image(
                     plane,
                     meta,
                     axis_name,
@@ -740,7 +937,25 @@ def run_visualization(
                     plot,
                     save_dpi,
                     figure_size,
+                    colorbar_limits=global_limits,
                 )
+                rendered_paths = rendered_info["saved_paths"]
+                for saved_path in rendered_paths:
+                    append_slice_metadata_log(
+                        slice_metadata_log_path(saved_path),
+                        source_path,
+                        field_label,
+                        axis_name,
+                        plane_index,
+                        coord_value,
+                        meta["step"],
+                        meta["time"],
+                        rendered_info["plane_min"],
+                        rendered_info["plane_max"],
+                        rendered_info["colorbar_min"],
+                        rendered_info["colorbar_max"],
+                        saved_path,
+                    )
                 print(
                     f"  Render finished for {field_label}/{stored_slice_tag} in "
                     f"{time.perf_counter() - render_start:.2f}s",
@@ -774,7 +989,7 @@ def main():
         "--field",
         action="append",
         default=[],
-        help="Field to plot. Repeat to render multiple fields. If omitted, render velocity, vorticity, and any appended scalar fields.",
+        help="Field to plot. Repeat to render multiple fields. If omitted, render velocity, vorticity, Q, R, and any appended scalar fields.",
     )
     parser.add_argument("--cmap", default="RdBu_r", help="Matplotlib colormap")
     parser.add_argument("--width", type=float, default=None, help="Optional square plot width in domain units")
@@ -789,7 +1004,7 @@ def main():
         "--backend",
         default="heffte_fftw",
         choices=["heffte_fftw", "heffte_stock"],
-        help="HeFFTe backend used when deriving vorticity from FFTs.",
+        help="HeFFTe backend used when deriving vorticity and Q-criterion from FFTs.",
     )
     args = parser.parse_args()
     run_visualization(

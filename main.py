@@ -55,7 +55,7 @@ Examples:
         "--slice-field",
         action="append",
         default=[],
-        help="Field for slice plots. Repeat to render multiple fields. If omitted, render velocity, vorticity, and any appended scalar fields.",
+        help="Field for slice plots. Repeat to render multiple fields. If omitted, render velocity, vorticity, Q, R, and any appended scalar fields.",
     )
     parser.add_argument(
         "--scalar-file",

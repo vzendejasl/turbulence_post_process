@@ -9,6 +9,7 @@ import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.colors import LogNorm
 
 from postprocess_lib.converter import is_structured_velocity_hdf5
 
@@ -270,3 +271,318 @@ def plot_spectra(results):
 
         fig.tight_layout()
         plt.show()
+
+
+def save_qr_joint_pdf(
+    qr_result,
+    filename,
+    step_number,
+    time_value,
+    nx,
+    ny,
+    nz,
+):
+    """Save the Q-R joint PDF histogram and normalized density to HDF5."""
+    stem = _spectra_output_stem(filename)
+    output_path = f"{stem}_qr_joint_pdf.h5"
+
+    with h5py.File(output_path, "w") as hf:
+        hf.attrs["source_file"] = os.path.abspath(filename)
+        hf.attrs["step"] = str(step_number)
+        hf.attrs["time"] = float(time_value)
+        hf.attrs["grid_shape"] = np.asarray((nx, ny, nz), dtype=np.int64)
+        hf.attrs["total_samples"] = int(qr_result["total_samples"])
+        hf.attrs["total_points"] = int(qr_result["total_points"])
+        hf.attrs["retained_samples"] = int(qr_result["retained_samples"])
+        hf.attrs["retained_fraction"] = float(qr_result["retained_fraction"])
+        hf.attrs["max_grad_fro_sq"] = float(qr_result["max_grad_fro_sq"])
+        hf.attrs["filter_fraction"] = float(qr_result["filter_fraction"])
+        hf.attrs["filter_threshold"] = float(qr_result["filter_threshold"])
+        hf.attrs["q_min"] = float(qr_result["q_min"])
+        hf.attrs["q_max"] = float(qr_result["q_max"])
+        hf.attrs["r_min"] = float(qr_result["r_min"])
+        hf.attrs["r_max"] = float(qr_result["r_max"])
+        hf.attrs["q_normalization"] = "Q / |grad(u)|_F^2"
+        hf.attrs["r_normalization"] = "R / |grad(u)|_F^3"
+        hf.attrs["filter_rule"] = "|grad(u)|_F^2 / max(|grad(u)|_F^2) >= 1e-3"
+
+        hf.create_dataset("q_edges", data=np.asarray(qr_result["q_edges"], dtype=np.float64))
+        hf.create_dataset("r_edges", data=np.asarray(qr_result["r_edges"], dtype=np.float64))
+        hf.create_dataset("q_centers", data=np.asarray(qr_result["q_centers"], dtype=np.float64))
+        hf.create_dataset("r_centers", data=np.asarray(qr_result["r_centers"], dtype=np.float64))
+        hf.create_dataset("counts", data=np.asarray(qr_result["counts"], dtype=np.float64))
+        hf.create_dataset("joint_pdf", data=np.asarray(qr_result["joint_pdf"], dtype=np.float64))
+
+    print(f"Saved Q-R joint PDF data: {output_path}")
+    print(
+        "  Q-R PDF normalization: q_A = Q / |grad(u)|_F^2, "
+        "r_A = R / |grad(u)|_F^3"
+    )
+    print(
+        "  Retained samples after Frobenius-norm filter: "
+        f"{qr_result['retained_samples']} / {qr_result['total_points']} "
+        f"({100.0 * qr_result['retained_fraction']:.2f}%)"
+    )
+    return output_path
+
+
+def _qr_plot_settings():
+    """Return the shared styling and range settings for Q-R PDF plots."""
+    return {
+        "r_plot_limit": 0.2,
+        "q_plot_limit": 0.5,
+        "colorbar_vmin": 1.0e-3,
+        "colorbar_vmax": 1.0e2,
+        "cmap": "RdBu_r",
+        "line_contour_probabilities": (0.05, 0.15, 0.25, 0.50),
+    }
+
+
+def _qr_enclosed_probability_contour_level(joint_pdf, q_edges, r_edges, enclosed_probability=0.9):
+    """Return the PDF isovalue enclosing the highest-density region with the target mass."""
+    bin_area = np.outer(np.diff(q_edges), np.diff(r_edges))
+    cell_probability = np.asarray(joint_pdf, dtype=np.float64) * bin_area
+    flat_pdf = np.asarray(joint_pdf, dtype=np.float64).ravel(order="C")
+    flat_probability = cell_probability.ravel(order="C")
+    positive_mask = flat_pdf > 0.0
+    if not np.any(positive_mask):
+        return None
+
+    order = np.argsort(flat_pdf[positive_mask])[::-1]
+    sorted_pdf = flat_pdf[positive_mask][order]
+    sorted_probability = flat_probability[positive_mask][order]
+    cumulative_probability = np.cumsum(sorted_probability)
+    contour_index = int(np.searchsorted(cumulative_probability, enclosed_probability, side="left"))
+    contour_index = min(contour_index, sorted_pdf.size - 1)
+    return float(sorted_pdf[contour_index])
+
+
+def _qr_enclosed_probability_contour_levels(joint_pdf, q_edges, r_edges, enclosed_probabilities):
+    """Return contour levels for a sequence of enclosed-probability targets."""
+    levels = {}
+    for probability in enclosed_probabilities:
+        level = _qr_enclosed_probability_contour_level(
+            joint_pdf,
+            q_edges,
+            r_edges,
+            enclosed_probability=probability,
+        )
+        if level is not None:
+            levels[float(probability)] = float(level)
+    return levels
+
+
+def _print_qr_plot_summary(output_path, backend_name, settings, line_contour_levels, contour_90_level):
+    """Print a consistent summary of the Q-R plot that was written."""
+    print(f"Saved Q-R joint PDF plot: {output_path}")
+    print(f"  Plot backend: {backend_name}")
+    print(
+        "  Plot bounds: "
+        f"r_A in [{-settings['r_plot_limit']:.1f}, {settings['r_plot_limit']:.1f}], "
+        f"q_A in [{-settings['q_plot_limit']:.1f}, {settings['q_plot_limit']:.1f}]"
+    )
+    print(
+        "  Colorbar scale: "
+        f"log10 joint PDF from {settings['colorbar_vmin']:.0e} to {settings['colorbar_vmax']:.0e}"
+    )
+    if line_contour_levels:
+        formatted = ", ".join(
+            f"{int(round(probability * 100.0))}% -> {level:.6e}"
+            for probability, level in sorted(line_contour_levels.items())
+        )
+        print(f"  Enclosed-probability contour levels: {formatted}")
+    if contour_90_level is not None:
+        print(f"  90% probability contour level: {contour_90_level:.6e}")
+
+
+def _plot_qr_joint_pdf_matplotlib(qr_result, output_path):
+    """Render the Q-R PDF using the existing Matplotlib contour workflow."""
+    settings = _qr_plot_settings()
+    q_centers = np.asarray(qr_result["q_centers"], dtype=np.float64)
+    r_centers = np.asarray(qr_result["r_centers"], dtype=np.float64)
+    joint_pdf = np.asarray(qr_result["joint_pdf"], dtype=np.float64)
+    q_edges = np.asarray(qr_result["q_edges"], dtype=np.float64)
+    r_edges = np.asarray(qr_result["r_edges"], dtype=np.float64)
+    # Plot the positive PDF on logarithmic contour levels to resolve both the
+    # dense core and the weaker tails in the joint distribution.
+    contour_levels = np.logspace(
+        np.log10(settings["colorbar_vmin"]),
+        np.log10(settings["colorbar_vmax"]),
+        21,
+        dtype=np.float64,
+    )
+    line_contour_levels = _qr_enclosed_probability_contour_levels(
+        joint_pdf,
+        q_edges,
+        r_edges,
+        settings["line_contour_probabilities"],
+    )
+    contour_90_level = _qr_enclosed_probability_contour_level(joint_pdf, q_edges, r_edges)
+    pdf_to_plot = np.ma.masked_less_equal(joint_pdf, 0.0)
+    r_curve = np.linspace(-settings["r_plot_limit"], settings["r_plot_limit"], 800, dtype=np.float64)
+    q_curve = -np.cbrt((27.0 / 4.0) * (r_curve**2))
+
+    with plt.rc_context(_plot_style()):
+        fig, ax = plt.subplots(figsize=(7.0, 6.0))
+        filled = ax.contourf(
+            r_centers,
+            q_centers,
+            pdf_to_plot,
+            levels=contour_levels,
+            cmap=settings["cmap"],
+            norm=LogNorm(vmin=settings["colorbar_vmin"], vmax=settings["colorbar_vmax"]),
+            extend="both",
+        )
+        if line_contour_levels:
+            ax.contour(
+                r_centers,
+                q_centers,
+                pdf_to_plot,
+                levels=np.asarray(sorted(line_contour_levels.values()), dtype=np.float64),
+                colors="k",
+                linewidths=0.9,
+                alpha=0.8,
+            )
+        ax.plot(r_curve, q_curve, color="black", linewidth=1.5)
+        if contour_90_level is not None:
+            # The magenta contour marks the highest-density region containing
+            # 90% of the total probability mass in the joint PDF.
+            ax.contour(
+                r_centers,
+                q_centers,
+                joint_pdf,
+                levels=[contour_90_level],
+                colors=["magenta"],
+                linewidths=1.6,
+            )
+        colorbar = fig.colorbar(filled, ax=ax)
+        colorbar.set_label(r"$\mathrm{joint\ PDF}$")
+        ax.set_xlabel(r"$r_A$")
+        ax.set_ylabel(r"$q_A$")
+        ax.set_title(r"Frobenius-Normalized $Q$-$R$ Joint PDF")
+        ax.set_xlim(-settings["r_plot_limit"], settings["r_plot_limit"])
+        ax.set_ylim(-settings["q_plot_limit"], settings["q_plot_limit"])
+        ax.grid(True, which="both", alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(output_path)
+        plt.close(fig)
+
+    _print_qr_plot_summary(output_path, "matplotlib", settings, line_contour_levels, contour_90_level)
+    return output_path
+
+
+def _plot_qr_joint_pdf_yt(qr_result, output_path):
+    """Render the Q-R PDF with yt.PhasePlot and Matplotlib overlays."""
+    import yt
+    from yt.visualization.profile_plotter import PhasePlot
+
+    settings = _qr_plot_settings()
+    q_edges = np.asarray(qr_result["q_edges"], dtype=np.float64)
+    r_edges = np.asarray(qr_result["r_edges"], dtype=np.float64)
+    q_centers = np.asarray(qr_result["q_centers"], dtype=np.float64)
+    r_centers = np.asarray(qr_result["r_centers"], dtype=np.float64)
+    joint_pdf = np.asarray(qr_result["joint_pdf"], dtype=np.float64)
+    line_contour_levels = _qr_enclosed_probability_contour_levels(
+        joint_pdf,
+        q_edges,
+        r_edges,
+        settings["line_contour_probabilities"],
+    )
+    contour_90_level = _qr_enclosed_probability_contour_level(joint_pdf, q_edges, r_edges)
+
+    rr, qq = np.meshgrid(r_centers, q_centers)
+    particle_count = rr.size
+    particle_data = {
+        "particle_position_x": np.zeros(particle_count, dtype=np.float64),
+        "particle_position_y": np.zeros(particle_count, dtype=np.float64),
+        "particle_position_z": np.zeros(particle_count, dtype=np.float64),
+        # One synthetic particle per (r_A, q_A) bin center lets yt render the
+        # already-computed joint PDF through its PhasePlot/profile machinery.
+        "r_bin": rr.ravel(order="C"),
+        "q_bin": qq.ravel(order="C"),
+        "joint_pdf_value": joint_pdf.ravel(order="C"),
+    }
+
+    ds = yt.load_particles(particle_data, length_unit=1.0)
+    ad = ds.all_data()
+    profile = yt.create_profile(
+        ad,
+        [("io", "r_bin"), ("io", "q_bin")],
+        [("io", "joint_pdf_value")],
+        n_bins=(len(r_centers), len(q_centers)),
+        extrema={
+            ("io", "r_bin"): (float(r_edges[0]), float(r_edges[-1])),
+            ("io", "q_bin"): (float(q_edges[0]), float(q_edges[-1])),
+        },
+        weight_field=None,
+        logs={
+            ("io", "r_bin"): False,
+            ("io", "q_bin"): False,
+        },
+    )
+    phase = PhasePlot.from_profile(profile, figure_size=7.0, fontsize=16)
+    phase.set_cmap(("io", "joint_pdf_value"), settings["cmap"])
+    phase.set_zlim(("io", "joint_pdf_value"), settings["colorbar_vmin"], settings["colorbar_vmax"])
+    phase.render()
+
+    plot = phase.plots[("io", "joint_pdf_value")]
+    ax = plot.axes
+    ax.set_xlim(-settings["r_plot_limit"], settings["r_plot_limit"])
+    ax.set_ylim(-settings["q_plot_limit"], settings["q_plot_limit"])
+    ax.set_xlabel(r"$r_A$")
+    ax.set_ylabel(r"$q_A$")
+    ax.set_title(r"Frobenius-Normalized $Q$-$R$ Joint PDF")
+    ax.grid(True, which="both", alpha=0.2)
+
+    r_curve = np.linspace(-settings["r_plot_limit"], settings["r_plot_limit"], 800, dtype=np.float64)
+    q_curve = -np.cbrt((27.0 / 4.0) * (r_curve**2))
+    ax.plot(r_curve, q_curve, color="black", linewidth=1.5)
+    if line_contour_levels:
+        ax.contour(
+            r_centers,
+            q_centers,
+            np.ma.masked_less_equal(joint_pdf, 0.0),
+            levels=np.asarray(sorted(line_contour_levels.values()), dtype=np.float64),
+            colors="k",
+            linewidths=0.9,
+            alpha=0.8,
+        )
+    if contour_90_level is not None:
+        ax.contour(
+            r_centers,
+            q_centers,
+            joint_pdf,
+            levels=[contour_90_level],
+            colors=["magenta"],
+            linewidths=1.6,
+        )
+
+    if hasattr(plot, "cb"):
+        plot.cb.set_label(r"$\mathrm{joint\ PDF}$")
+
+    plot.figure.savefig(output_path, bbox_inches="tight")
+    plt.close(plot.figure)
+
+    _print_qr_plot_summary(output_path, "yt", settings, line_contour_levels, contour_90_level)
+    return output_path
+
+
+def plot_qr_joint_pdf(qr_result, filename):
+    """Save a PDF plot of the Frobenius-normalized Q-R joint PDF with yt when available."""
+    stem = _spectra_output_stem(filename)
+    output_path = f"{stem}_qr_joint_pdf.pdf"
+    backend = os.environ.get("TURB_POSTPROCESS_QR_PLOT_BACKEND", "yt").strip().lower()
+
+    if backend not in {"yt", "matplotlib"}:
+        raise ValueError(
+            "Unsupported Q-R plot backend "
+            f"{backend!r}. Use one of: yt, matplotlib."
+        )
+
+    if backend == "yt":
+        try:
+            return _plot_qr_joint_pdf_yt(qr_result, output_path)
+        except Exception as exc:
+            print(f"yt PhasePlot backend unavailable, falling back to Matplotlib: {exc}")
+
+    return _plot_qr_joint_pdf_matplotlib(qr_result, output_path)

@@ -3,41 +3,52 @@
 
 Example commands:
   Notes:
-    --field selects the saved variable to replot.
-    --slice selects which saved plane of that variable to render.
+    --field selects the saved variable to replot using:
+      1 -> vorticity_magnitude
+      2 -> velocity_magnitude
+      3 -> the saved scalar field when there is exactly one scalar field
+      q_criterion and r_criterion are available by explicit field name when present
+    --slice selects which saved plane to render using:
+      1 -> xy_center
+      2 -> xy_face
+      3 -> yz_face
+      4 -> zx_face
+    If --slice is omitted, all saved slices for the selected field are rendered.
+    If more than one slice file is provided, comparison contour overlays are rendered automatically.
+    When contour plots are rendered, matching zoomed contour plots are also written using --zoom-window.
 
   List available fields and slices:
     python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --list
 
   Render one yt slice image:
-    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field 1 --slice 1
 
-  Render a separate contour plot with the default yt backend:
-    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour
+  Render one slice image plus contour and zoomed contour plots:
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field 1 --slice 1 --contour
 
   Render contours with a fixed number of levels:
-    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour --contour-levels 20
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field 1 --slice 1 --contour --contour-levels 20
 
   Render contours at explicit values:
-    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour --contour-values 0.5,1.0,2.0,4.0,8.0
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field 1 --slice 1 --contour --contour-values 0.5,1.0,2.0,4.0,8.0
 
-  Render normalized vorticity and contour values in normalized units:
-    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --normalize vorticity --contour --contour-values 0.5,1.0,2.0
+  Render normalized vorticity with interpolation disabled:
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field 1 --slice 1 --normalize --contour --contour-values 0.5,1.0,2.0 --interpolate 0
 
-  Batch-process multiple slice files and save into each file's own slice_replots folder:
-    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour
+  Render every saved slice for one field into per-slice subdirectories:
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field 1
 
-  Compare overlaid contours from two or three slice files:
-    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 data/run3/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour --compare
+  Render every saved slice with contours:
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field 1 --contour
+
+  Compare two or three slice files automatically:
+    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 data/run3/SampledData0_slices.h5 --field 1 --slice 1
 
   Compare two slice files using fixed contour values:
-    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour --compare --contour-values 0.5,1.0,2.0,4.0
+    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 --field 1 --slice 1 --contour-values 0.5,1.0,2.0,4.0
 
-  Compare three slice files using fixed contour values:
-    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 data/run3/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --contour --compare --contour-values 0.5,1.0,2.0,4.0
-
-  Compare normalized vorticity using fixed normalized contour values:
-    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 --field vorticity_magnitude --slice xy_center --normalize vorticity --contour --compare --contour-values 0.5,1.0,2.0
+  Compare all saved slices with fixed contour values and a custom zoom window:
+    python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 --field 1 --contour-values 0.5,1.0,2.0,4.0 --zoom-window 0.0,0.5
 """
 
 from __future__ import annotations
@@ -53,7 +64,26 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-COMPARE_COLORS = ("k", "red", "blue")
+COMPARE_COLORS = ("k","red","green")
+CONTOUR_LABEL_COLOR = "black"
+CONTOUR_LABEL_FONTSIZE = 8
+FIELD_SHORTCUTS = {
+    "1": "vorticity_magnitude",
+    "2": "velocity_magnitude",
+}
+SLICE_SHORTCUTS = {
+    "1": "xy_center",
+    "2": "xy_face",
+    "3": "yz_face",
+    "4": "zx_face",
+}
+# Saved slice selectors:
+#   1 -> xy_center
+#   2 -> xy_face
+#   3 -> yz_face
+#   4 -> zx_face
+
+DEFAULT_ZOOM_WINDOW = (0.0, 0.5)
 
 
 def _yt_font_style():
@@ -74,10 +104,81 @@ def _list_available_slices(filepath):
     return list_available_slices(filepath)
 
 
+def _field_family_map(filepath):
+    import h5py
+
+    with h5py.File(filepath, "r") as hf:
+        slices_group = hf["slices"]
+        return {
+            field_name: str(slices_group[field_name].attrs.get("field_family", "")).strip()
+            for field_name in slices_group.keys()
+        }
+
+
+def _resolve_field_name(filepath, field_name):
+    """Resolve numeric field shortcuts to stored slice field names."""
+    if field_name is None:
+        return None
+
+    field_name = str(field_name).strip()
+    if field_name in FIELD_SHORTCUTS:
+        return FIELD_SHORTCUTS[field_name]
+
+    if field_name == "3":
+        family_map = _field_family_map(filepath)
+        scalar_fields = sorted(name for name, family in family_map.items() if family == "scalar")
+        if len(scalar_fields) == 1:
+            return scalar_fields[0]
+        if not scalar_fields:
+            raise SystemExit("Field selector '3' requested a scalar field, but no scalar field was saved in this slice file.")
+        raise SystemExit(
+            "Field selector '3' is ambiguous because multiple scalar fields were saved: "
+            + ", ".join(scalar_fields)
+            + ". Use the explicit field name instead."
+        )
+
+    return field_name
+
+
+def _resolve_slice_name(slice_tag):
+    """Resolve numeric slice shortcuts to stored slice tags."""
+    if slice_tag is None:
+        return None
+
+    slice_tag = str(slice_tag).strip()
+    if slice_tag in SLICE_SHORTCUTS:
+        return SLICE_SHORTCUTS[slice_tag]
+    return slice_tag
+
+
 def _load_saved_slice(filepath, field_name, slice_tag):
     from postprocess_vis.slice_data import load_saved_slice
 
     return load_saved_slice(filepath, field_name, slice_tag)
+
+
+def _available_slice_tags(filepath, field_name):
+    summary = _list_available_slices(filepath)
+    fields = summary["fields"]
+    if field_name not in fields:
+        raise SystemExit(
+            f"Field '{field_name}' is not available in {os.path.abspath(filepath)}. "
+            f"Available fields: {', '.join(sorted(fields))}"
+        )
+    return list(fields[field_name])
+
+
+def _resolve_slice_tags(filepath, field_name, slice_tag):
+    """Resolve one requested slice tag or all saved tags for a field."""
+    available_tags = _available_slice_tags(filepath, field_name)
+    if slice_tag is None:
+        return available_tags
+    if slice_tag not in available_tags:
+        raise SystemExit(
+            f"Slice '{slice_tag}' is not available for field '{field_name}' in {os.path.abspath(filepath)}. "
+            f"Available slices: {', '.join(available_tags)}"
+        )
+    return [slice_tag]
 
 
 def _plane_extent_from_arrays(horizontal_coords, vertical_coords):
@@ -91,6 +192,98 @@ def _prepare_plot_values(values):
     values = np.asarray(values, dtype=np.float64).copy()
     values[np.abs(values) < 1.0e-12] = 0.0
     return np.round(values, decimals=10)
+
+
+def _stored_global_limits(attrs):
+    """Return stored full-volume colorbar limits when present."""
+    if "global_min" not in attrs or "global_max" not in attrs:
+        return None
+    return float(attrs["global_min"]), float(attrs["global_max"])
+
+
+def _resolve_saved_color_limits(saved, vmin=None, vmax=None):
+    """Resolve the colorbar limits used for one saved slice plot."""
+    values = _prepare_plot_values(saved["values"])
+    attrs = saved["attrs"]
+    stored_limits = _stored_global_limits(attrs)
+    if stored_limits is None:
+        data_min = float(np.min(values))
+        data_max = float(np.max(values))
+        source = "gathered 2D slice fallback"
+    else:
+        data_min, data_max = stored_limits
+        source = "stored global 3D limits"
+
+    zmin = float(data_min if vmin is None else vmin)
+    zmax = float(data_max if vmax is None else vmax)
+    return data_min, data_max, zmin, zmax, source
+
+
+def _parse_zoom_window(zoom_window):
+    """Parse a zoom window as xmin,xmax or xmin,xmax,ymin,ymax."""
+    if zoom_window is None:
+        return None
+
+    if isinstance(zoom_window, tuple) and len(zoom_window) in {2, 4}:
+        return tuple(float(value) for value in zoom_window)
+
+    pieces = [piece.strip() for piece in str(zoom_window).split(",") if piece.strip()]
+    try:
+        values = tuple(float(piece) for piece in pieces)
+    except ValueError as exc:
+        raise ValueError("--zoom-window must be a comma-separated list of numbers.") from exc
+
+    if len(values) not in {2, 4}:
+        raise ValueError("--zoom-window must contain either 2 values (xmin,xmax) or 4 values (xmin,xmax,ymin,ymax).")
+    return values
+
+
+def _apply_zoom_limits(ax, zoom_window):
+    """Apply explicit axis limits for a zoomed contour view."""
+    if zoom_window is None:
+        return
+
+    if len(zoom_window) == 2:
+        xmin, xmax = zoom_window
+        ymin, ymax = zoom_window
+    else:
+        xmin, xmax, ymin, ymax = zoom_window
+
+    ax.set_xlim(float(xmin), float(xmax))
+    ax.set_ylim(float(ymin), float(ymax))
+
+
+def _apply_image_interpolation(image, interpolate):
+    """Apply visual interpolation to a yt-backed image plot."""
+    if interpolate:
+        image.set_interpolation("bicubic")
+        if hasattr(image, "set_interpolation_stage"):
+            image.set_interpolation_stage("rgba")
+        return
+
+    image.set_interpolation("nearest")
+    if hasattr(image, "set_interpolation_stage"):
+        image.set_interpolation_stage("data")
+
+
+def _comparison_contour_label_color(num_datasets):
+    """Return the contour-label color for compare mode."""
+    if int(num_datasets) >= 3:
+        return "green"
+    return CONTOUR_LABEL_COLOR
+
+
+def _style_contour_labels(labels):
+    """Apply shared styling to contour labels."""
+    for label in labels:
+        label.set_fontweight("bold")
+        label.set_bbox(
+            {
+                "facecolor": "white",
+                "edgecolor": "white",
+                "boxstyle": "square,pad=0.1",
+            }
+        )
 
 
 def _star_plot_label(plot_label):
@@ -108,61 +301,118 @@ def _star_plot_label(plot_label):
     return f"{plot_label}^*"
 
 
+def _normalization_mode(normalize_requested, attrs):
+    """Infer the normalization mode from the field family."""
+    if not normalize_requested:
+        return "none"
+
+    field_family = str(attrs.get("field_family", "")).strip()
+    if field_family == "vorticity":
+        return "vorticity"
+    if field_family == "velocity":
+        return "velocity"
+    return "none"
+
+
 def _apply_normalization(saved, normalize, print_stats=False):
     """Return a copy of saved slice data with optional normalization applied."""
     values_raw = _prepare_plot_values(saved["values"])
     attrs = dict(saved["attrs"])
     values = values_raw.copy()
+    mode = _normalization_mode(normalize, attrs)
+    stored_limits_raw = _stored_global_limits(attrs)
 
     if print_stats:
-        print(f"Raw data min: {float(np.min(values_raw)):.6g}")
-        print(f"Raw data max: {float(np.max(values_raw)):.6g}")
+        if stored_limits_raw is None:
+            print("Stored global 3D colorbar limits: unavailable; falling back to slice-local values.")
+        else:
+            print(f"Stored global 3D colorbar min: {stored_limits_raw[0]:.6g}")
+            print(f"Stored global 3D colorbar max: {stored_limits_raw[1]:.6g}")
 
-    if normalize == "none":
+    if mode == "none":
+        attrs["normalization"] = "none"
+        attrs["normalization_factor"] = 1.0
+        if normalize and print_stats:
+            print(
+                f"Normalization requested, but field '{attrs.get('field_name', '')}' "
+                "is neither velocity nor vorticity. Leaving values unchanged."
+            )
+        if print_stats:
+            if stored_limits_raw is None:
+                print(f"Using 2D slice fallback min: {float(np.min(values)):.6g}")
+                print(f"Using 2D slice fallback max: {float(np.max(values)):.6g}")
+            else:
+                print(f"Using stored global 3D colorbar min: {stored_limits_raw[0]:.6g}")
+                print(f"Using stored global 3D colorbar max: {stored_limits_raw[1]:.6g}")
         normalized = dict(saved)
         normalized["values"] = values
         normalized["attrs"] = attrs
         return normalized
 
-    if normalize == "vorticity":
-        field_family = str(attrs.get("field_family", "")).strip()
-        if field_family != "vorticity":
-            if print_stats:
-                print(
-                    f"Normalization preset '{normalize}' requested, but field '{attrs.get('field_name', '')}' "
-                    f"is not in the vorticity family. Leaving values unchanged."
-                )
-            normalized = dict(saved)
-            normalized["values"] = values
-            normalized["attrs"] = attrs
-            return normalized
-
+    if mode == "vorticity":
         U0 = 1.0
         L = 1.0 / (2.0 * np.pi)
         reference_scale = U0 / L
         normalization_factor = 1.0 / reference_scale
         values = np.round(values_raw * normalization_factor, decimals=10)
         attrs["plot_label"] = _star_plot_label(attrs.get("plot_label", attrs.get("field_name", "")))
-        attrs["normalization"] = normalize
+        attrs["normalization"] = mode
         attrs["normalization_factor"] = normalization_factor
         attrs["normalization_reference_scale"] = reference_scale
+        if stored_limits_raw is not None:
+            attrs["global_min"] = float(stored_limits_raw[0] * normalization_factor)
+            attrs["global_max"] = float(stored_limits_raw[1] * normalization_factor)
 
         if print_stats:
-            print("Applying normalization preset: vorticity")
+            print("Applying normalization: vorticity")
             print(f"  U0 = {U0:.6g}")
             print(f"  L = {L:.6g}")
             print(f"  Reference scale U0/L = {reference_scale:.6g}")
             print("  Units check: omega has units 1/T and U0/L has units 1/T.")
             print(f"  Normalization uses omega* = omega / (U0/L) = omega * {normalization_factor:.6g}")
-            print(f"Normalized data min: {float(np.min(values)):.6g}")
-            print(f"Normalized data max: {float(np.max(values)):.6g}")
+            if stored_limits_raw is None:
+                print(f"Normalized 2D slice fallback min: {float(np.min(values)):.6g}")
+                print(f"Normalized 2D slice fallback max: {float(np.max(values)):.6g}")
+            else:
+                print(f"Normalized global 3D colorbar min: {float(attrs['global_min']):.6g}")
+                print(f"Normalized global 3D colorbar max: {float(attrs['global_max']):.6g}")
 
         normalized = dict(saved)
         normalized["values"] = values
         normalized["attrs"] = attrs
         return normalized
 
-    raise ValueError(f"Unsupported normalization preset: {normalize}")
+    if mode == "velocity":
+        U0 = 1.0
+        reference_scale = U0
+        normalization_factor = 1.0 / reference_scale
+        values = np.round(values_raw * normalization_factor, decimals=10)
+        attrs["plot_label"] = _star_plot_label(attrs.get("plot_label", attrs.get("field_name", "")))
+        attrs["normalization"] = mode
+        attrs["normalization_factor"] = normalization_factor
+        attrs["normalization_reference_scale"] = reference_scale
+        if stored_limits_raw is not None:
+            attrs["global_min"] = float(stored_limits_raw[0] * normalization_factor)
+            attrs["global_max"] = float(stored_limits_raw[1] * normalization_factor)
+
+        if print_stats:
+            print("Applying normalization: velocity")
+            print(f"  U0 = {U0:.6g}")
+            print("  Units check: |u| has units L/T and U0 has units L/T.")
+            print(f"  Normalization uses u* = u / U0 = u * {normalization_factor:.6g}")
+            if stored_limits_raw is None:
+                print(f"Normalized 2D slice fallback min: {float(np.min(values)):.6g}")
+                print(f"Normalized 2D slice fallback max: {float(np.max(values)):.6g}")
+            else:
+                print(f"Normalized global 3D colorbar min: {float(attrs['global_min']):.6g}")
+                print(f"Normalized global 3D colorbar max: {float(attrs['global_max']):.6g}")
+
+        normalized = dict(saved)
+        normalized["values"] = values
+        normalized["attrs"] = attrs
+        return normalized
+
+    raise ValueError(f"Unsupported normalization mode: {mode}")
 
 
 def _contour_limits(values, vmin, vmax):
@@ -204,11 +454,15 @@ def _resolve_contour_levels(values, vmin, vmax, contour_levels, contour_values):
     return np.linspace(zmin, zmax, contour_levels)
 
 
-def _build_contour_grid(horizontal_coords, vertical_coords, values, target_size=None):
-    """Return a regular grid for smoother contouring on yt-backed plots."""
+def _build_contour_grid(horizontal_coords, vertical_coords, values, target_size=None, interpolate=True):
+    """Return a contour grid, optionally interpolated onto a denser mesh."""
     horizontal_coords = np.asarray(horizontal_coords, dtype=np.float64)
     vertical_coords = np.asarray(vertical_coords, dtype=np.float64)
     values = np.asarray(values, dtype=np.float64)
+
+    if not interpolate:
+        X, Y = np.meshgrid(horizontal_coords, vertical_coords)
+        return X, Y, values
 
     if target_size is None:
         target_size = min(max(8 * max(values.shape), 512), 2048)
@@ -278,11 +532,14 @@ def output_stem(source_path, field_name):
 
 def normalization_suffix(normalize):
     """Return a filename suffix for a normalization preset."""
-    if normalize == "none":
+    mode = _normalization_mode(normalize, {"field_family": ""}) if isinstance(normalize, bool) else normalize
+    if mode == "none":
         return ""
-    if normalize == "vorticity":
+    if mode == "vorticity":
         return "_vorticity_star"
-    return f"_{normalize}"
+    if mode == "velocity":
+        return "_velocity_star"
+    return f"_{mode}"
 
 
 def output_source_path(slice_file, field_name, saved_attrs):
@@ -309,22 +566,26 @@ def output_source_path(slice_file, field_name, saved_attrs):
     return slice_file
 
 
-def default_output_directory(slice_file):
+def default_output_directory(slice_file, slice_tag=None):
     """Return the directory where replots should be written."""
     slice_path = Path(slice_file).resolve()
     if slice_path.parent.name == "slice_data":
         output_dir = slice_path.parent.parent / "slice_plots" / "slice_replots"
     else:
         output_dir = slice_path.parent / "slice_replots"
+    if slice_tag is not None:
+        output_dir = output_dir / str(slice_tag)
     output_dir.mkdir(parents=True, exist_ok=True)
     return str(output_dir)
 
 
-def default_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none"):
+def default_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none", output_tag=None):
     """Return the default output path for one replotted saved slice."""
-    output_dir = default_output_directory(slice_file)
-    base = output_stem(output_source_path(slice_file, field_name, saved_attrs), field_name) + normalization_suffix(normalize)
-    return os.path.join(output_dir, f"{base}_{slice_tag}.{output_format}")
+    output_dir = default_output_directory(slice_file, slice_tag=slice_tag)
+    mode = _normalization_mode(normalize, saved_attrs) if isinstance(normalize, bool) else normalize
+    base = output_stem(output_source_path(slice_file, field_name, saved_attrs), field_name) + normalization_suffix(mode)
+    tag = slice_tag if output_tag is None else output_tag
+    return os.path.join(output_dir, f"{base}_{tag}.{output_format}")
 
 
 def default_comparison_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none"):
@@ -332,10 +593,11 @@ def default_comparison_output_name(slice_file, field_name, slice_tag, output_for
     return default_output_name(
         slice_file,
         field_name,
-        f"{slice_tag}_contour_compare",
+        slice_tag,
         output_format,
         saved_attrs,
         normalize=normalize,
+        output_tag=f"{slice_tag}_contour_compare",
     )
 
 
@@ -353,12 +615,62 @@ def default_comparison_metadata_name(slice_file, field_name, slice_tag, saved_at
     return f"{stem}_metadata.txt"
 
 
+def default_zoom_contour_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none"):
+    """Return the default output path for one zoomed contour plot."""
+    return default_output_name(
+        slice_file,
+        field_name,
+        slice_tag,
+        output_format,
+        saved_attrs,
+        normalize=normalize,
+        output_tag=f"{slice_tag}_contour_zoom",
+    )
+
+
+def default_zoom_comparison_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none"):
+    """Return the default output path for one zoomed comparison contour plot."""
+    return default_output_name(
+        slice_file,
+        field_name,
+        slice_tag,
+        output_format,
+        saved_attrs,
+        normalize=normalize,
+        output_tag=f"{slice_tag}_contour_compare_zoom",
+    )
+
+
+def default_zoom_comparison_metadata_name(slice_file, field_name, slice_tag, saved_attrs, normalize="none"):
+    """Return the default output path for one zoomed comparison metadata file."""
+    output_path = default_zoom_comparison_output_name(
+        slice_file,
+        field_name,
+        slice_tag,
+        "pdf",
+        saved_attrs,
+        normalize=normalize,
+    )
+    stem, _ = os.path.splitext(output_path)
+    return f"{stem}_metadata.txt"
+
+
 def build_comparison_metadata_text(prepared, field_name, slice_tag, normalize, levels):
     """Return metadata text describing one comparison contour plot."""
+    normalization_label = "none"
+    if prepared:
+        normalization_label = str(prepared[0]["attrs"].get("normalization", "none"))
+    if prepared:
+        contour_min = min(float(item["stored_limits"][0]) for item in prepared)
+        contour_max = max(float(item["stored_limits"][1]) for item in prepared)
+    else:
+        contour_min = contour_max = 0.0
     lines = [
         f"Field: {field_name}",
         f"Slice: {slice_tag}",
-        f"Normalization: {normalize}",
+        f"Normalization: {normalization_label}",
+        f"Stored global contour min: {contour_min:.6g}",
+        f"Stored global contour max: {contour_max:.6g}",
         "Contour colors:",
     ]
     for index, item in enumerate(prepared):
@@ -436,6 +748,8 @@ def render_saved_slice_contour_matplotlib(
     contour_filled,
     contour_color,
     normalize,
+    interpolate,
+    zoom_window=None,
 ):
     """Render a separate contour plot for one saved slice using matplotlib.
 
@@ -450,8 +764,10 @@ def render_saved_slice_contour_matplotlib(
     values = _prepare_plot_values(saved["values"])
     h_coords = np.asarray(saved["coord_horizontal"], dtype=np.float64)
     v_coords = np.asarray(saved["coord_vertical"], dtype=np.float64)
-
-    levels = _resolve_contour_levels(values, vmin, vmax, contour_levels, contour_values)
+    data_min, data_max, _, _, limits_source = _resolve_saved_color_limits(saved, vmin=vmin, vmax=vmax)
+    limits_values = np.array([data_min, data_max], dtype=np.float64)
+    levels = _resolve_contour_levels(limits_values, vmin, vmax, contour_levels, contour_values)
+    print(f"Contour levels use {limits_source}: min={data_min:.6g}, max={data_max:.6g}")
 
     X, Y = np.meshgrid(h_coords, v_coords)
 
@@ -462,7 +778,8 @@ def render_saved_slice_contour_matplotlib(
         fig.colorbar(cf, ax=ax, label=str(attrs["plot_label"]))
 
     CS = ax.contour(X, Y, values, levels=levels, colors=contour_color, linewidths=1.5)
-    ax.clabel(CS, fontsize=8, inline=True, fmt="%.3g")
+    contour_labels = ax.clabel(CS, fontsize=CONTOUR_LABEL_FONTSIZE, inline=True, fmt="%.3g", colors=CONTOUR_LABEL_COLOR)
+    _style_contour_labels(contour_labels)
 
     h_axis = str(attrs.get("horizontal_axis", "h"))
     v_axis = str(attrs.get("vertical_axis", "v"))
@@ -476,15 +793,17 @@ def render_saved_slice_contour_matplotlib(
         v_center = 0.5 * (float(v_coords[0]) + float(v_coords[-1]))
         ax.set_xlim(h_center - half_width, h_center + half_width)
         ax.set_ylim(v_center - half_width, v_center + half_width)
+    _apply_zoom_limits(ax, zoom_window)
     fig.tight_layout()
 
     output_path = output or default_output_name(
         slice_file,
         field_name,
-        f"{slice_tag}_contour",
+        slice_tag,
         output_format,
         attrs,
         normalize=normalize,
+        output_tag=f"{slice_tag}_contour",
     )
     fig.savefig(output_path, dpi=dpi)
     print(f"Saved contour: {output_path}")
@@ -511,6 +830,8 @@ def render_saved_slice_contour_yt(
     contour_filled,
     contour_color,
     normalize,
+    interpolate,
+    zoom_window=None,
 ):
     """Render a separate contour plot for one saved slice using yt."""
     import yt
@@ -524,14 +845,27 @@ def render_saved_slice_contour_yt(
     output_path = output or default_output_name(
         slice_file,
         field_name,
-        f"{slice_tag}_contour",
+        slice_tag,
         output_format,
         attrs,
         normalize=normalize,
+        output_tag=f"{slice_tag}_contour",
     )
-    zmin, zmax = _contour_limits(values, vmin, vmax)
-    levels = _resolve_contour_levels(values, vmin, vmax, contour_levels, contour_values)
-    grid_x, grid_y, contour_field = _build_contour_grid(horizontal_coords, vertical_coords, values)
+    data_min, data_max, zmin, zmax, limits_source = _resolve_saved_color_limits(saved, vmin=vmin, vmax=vmax)
+    levels = _resolve_contour_levels(
+        np.array([data_min, data_max], dtype=np.float64),
+        vmin,
+        vmax,
+        contour_levels,
+        contour_values,
+    )
+    print(f"Contour color scaling uses {limits_source}: min={data_min:.6g}, max={data_max:.6g}")
+    grid_x, grid_y, contour_field = _build_contour_grid(
+        horizontal_coords,
+        vertical_coords,
+        values,
+        interpolate=interpolate,
+    )
 
     slice_plot = yt.SlicePlot(dataset, str(attrs["axis"]), yt_field, center="c", origin="native")
     slice_plot.set_log(yt_field, False)
@@ -553,9 +887,7 @@ def render_saved_slice_contour_yt(
     slice_plot.render()
     window_plot = slice_plot.plots[yt_field]
     image = window_plot.axes.images[0]
-    image.set_interpolation("bicubic")
-    if hasattr(image, "set_interpolation_stage"):
-        image.set_interpolation_stage("rgba")
+    _apply_image_interpolation(image, interpolate)
     axes = window_plot.axes
     image.set_visible(False)
 
@@ -564,7 +896,9 @@ def render_saved_slice_contour_yt(
         window_plot.cb.set_label(str(attrs["plot_label"]))
 
     contour_set = axes.contour(grid_x, grid_y, contour_field, levels=levels, colors=contour_color, linewidths=1.5)
-    axes.clabel(contour_set, fontsize=8, inline=True, fmt="%.3g")
+    contour_labels = axes.clabel(contour_set, fontsize=CONTOUR_LABEL_FONTSIZE, inline=True, fmt="%.3g", colors=CONTOUR_LABEL_COLOR)
+    _style_contour_labels(contour_labels)
+    _apply_zoom_limits(axes, zoom_window)
     saved_path = window_plot.save(output_path, mpl_kwargs={"dpi": dpi})
     print(f"Saved contour: {saved_path}")
     if plot:
@@ -590,6 +924,8 @@ def render_saved_slice_contour(
     contour_color,
     contour_backend,
     normalize,
+    interpolate,
+    zoom_window=None,
 ):
     """Render a separate contour plot using yt or matplotlib."""
     if contour_backend == "matplotlib":
@@ -611,6 +947,8 @@ def render_saved_slice_contour(
             contour_filled,
             contour_color,
             normalize,
+            interpolate,
+            zoom_window=zoom_window,
         )
         return
 
@@ -633,6 +971,8 @@ def render_saved_slice_contour(
             contour_filled,
             contour_color,
             normalize,
+            interpolate,
+            zoom_window=zoom_window,
         )
     except Exception as exc:
         if contour_backend == "yt":
@@ -656,6 +996,8 @@ def render_saved_slice_contour(
             contour_filled,
             contour_color,
             normalize,
+            interpolate,
+            zoom_window=zoom_window,
         )
 
 
@@ -675,9 +1017,11 @@ def render_compared_contours(
     contour_values,
     contour_color,
     normalize,
+    interpolate,
     contour_filled=False,
     output_paths=None,
     metadata_paths=None,
+    zoom_window=None,
 ):
     """Render one overlaid comparison contour plot for up to three slice files."""
     import yt
@@ -724,13 +1068,19 @@ def render_compared_contours(
             if current_axes != reference_axes:
                 raise ValueError("All compared slice files must share the same displayed axes.")
 
-        grid_x, grid_y, contour_field = _build_contour_grid(horizontal_coords, vertical_coords, values)
+        grid_x, grid_y, contour_field = _build_contour_grid(
+            horizontal_coords,
+            vertical_coords,
+            values,
+            interpolate=interpolate,
+        )
         prepared.append(
             {
                 "slice_file": slice_file,
                 "attrs": attrs,
                 "saved": saved,
                 "values": values,
+                "stored_limits": _resolve_saved_color_limits(saved)[:2],
                 "horizontal_coords": horizontal_coords,
                 "vertical_coords": vertical_coords,
                 "grid_x": grid_x,
@@ -743,8 +1093,8 @@ def render_compared_contours(
     if contour_values is not None:
         levels = _parse_contour_values(contour_values)
     else:
-        global_min = min(float(np.min(item["values"])) for item in prepared)
-        global_max = max(float(np.max(item["values"])) for item in prepared)
+        global_min = min(float(item["stored_limits"][0]) for item in prepared)
+        global_max = max(float(item["stored_limits"][1]) for item in prepared)
         levels = _resolve_contour_levels(
             np.array([global_min, global_max], dtype=np.float64),
             vmin,
@@ -760,10 +1110,11 @@ def render_compared_contours(
         slice_tag,
         saved=base_item["saved"],
     )
-    base_min = float(np.min(base_item["values"]))
-    base_max = float(np.max(base_item["values"]))
+    base_min = float(base_item["stored_limits"][0])
+    base_max = float(base_item["stored_limits"][1])
     zmin = float(base_min if vmin is None else vmin)
     zmax = float(base_max if vmax is None else vmax)
+    print(f"Comparison contour scaling uses stored limits: min={base_min:.6g}, max={base_max:.6g}")
 
     slice_plot = yt.SlicePlot(
         base_dataset,
@@ -790,16 +1141,14 @@ def render_compared_contours(
     slice_plot.render()
     window_plot = slice_plot.plots[base_yt_field]
     image = window_plot.axes.images[0]
-    image.set_interpolation("bicubic")
-    if hasattr(image, "set_interpolation_stage"):
-        image.set_interpolation_stage("rgba")
+    _apply_image_interpolation(image, interpolate)
     image.set_visible(False)
     ax = window_plot.axes
 
     for index, item in enumerate(prepared):
-        color = contour_color if index == 0 else COMPARE_COLORS[index]
+        color = COMPARE_COLORS[index]
         item["compare_color"] = color
-        ax.contour(
+        contour_set = ax.contour(
             item["grid_x"],
             item["grid_y"],
             item["contour_field"],
@@ -807,6 +1156,15 @@ def render_compared_contours(
             colors=color,
             linewidths=1.5,
         )
+        if index == len(prepared) - 1:
+            contour_labels = ax.clabel(
+                contour_set,
+                fontsize=CONTOUR_LABEL_FONTSIZE,
+                inline=True,
+                fmt="%.3g",
+                colors=_comparison_contour_label_color(len(prepared)),
+            )
+            _style_contour_labels(contour_labels)
         print(f"Compare color: {item['label']} -> {color}")
 
     h_axis, v_axis = reference_axes
@@ -819,6 +1177,7 @@ def render_compared_contours(
         v_center = 0.5 * (float(reference_vertical[0]) + float(reference_vertical[-1]))
         ax.set_xlim(h_center - half_width, h_center + half_width)
         ax.set_ylim(v_center - half_width, v_center + half_width)
+    _apply_zoom_limits(ax, zoom_window)
 
     if output_paths is None:
         output_paths = [
@@ -871,8 +1230,9 @@ def render_saved_slice(
     dpi,
     figure_size,
     normalize,
+    interpolate,
 ):
-    """Render one saved slice plane to disk and/or screen with yt bicubic output."""
+    """Render one saved slice plane to disk and/or screen with optional yt interpolation."""
     import yt
 
     saved = _apply_normalization(_load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=True)
@@ -888,12 +1248,12 @@ def render_saved_slice(
         attrs,
         normalize=normalize,
     )
-    data_min = float(np.min(values))
-    data_max = float(np.max(values))
-    print(f"Plot data min: {data_min:.6g}")
-    print(f"Plot data max: {data_max:.6g}")
-    zmin = float(data_min if vmin is None else vmin)
-    zmax = float(data_max if vmax is None else vmax)
+    data_min, data_max, zmin, zmax, limits_source = _resolve_saved_color_limits(saved, vmin=vmin, vmax=vmax)
+    print(f"Colorbar source: {limits_source}")
+    print(f"Colorbar data min: {data_min:.6g}")
+    print(f"Colorbar data max: {data_max:.6g}")
+    print(f"Colorbar min used: {zmin:.6g}")
+    print(f"Colorbar max used: {zmax:.6g}")
 
     slice_plot = yt.SlicePlot(dataset, str(attrs["axis"]), yt_field, center="c", origin="native")
     slice_plot.set_log(yt_field, False)
@@ -914,9 +1274,7 @@ def render_saved_slice(
     window_plot = slice_plot.plots[yt_field]
     window_plot.cb.set_label(str(attrs["plot_label"]))
     image = window_plot.axes.images[0]
-    image.set_interpolation("bicubic")
-    if hasattr(image, "set_interpolation_stage"):
-        image.set_interpolation_stage("rgba")
+    _apply_image_interpolation(image, interpolate)
     saved_path = window_plot.save(output_path, mpl_kwargs={"dpi": dpi})
     print(f"Saved: {saved_path}")
     if plot:
@@ -978,6 +1336,9 @@ def print_saved_slice_metadata(slice_file, field_name, slice_tag):
     print(f"Plane coordinate: {float(attrs['plane_coord']):.6g}")
     print(f"Horizontal axis: {attrs['horizontal_axis']}")
     print(f"Vertical axis: {attrs['vertical_axis']}")
+    if "global_min" in attrs and "global_max" in attrs:
+        print(f"Stored global 3D colorbar min: {float(attrs['global_min']):.6g}")
+        print(f"Stored global 3D colorbar max: {float(attrs['global_max']):.6g}")
     print(f"Values shape: {saved['values'].shape}")
 
 
@@ -995,6 +1356,7 @@ def print_yt_summary(slice_file, field_name, slice_tag):
 def process_slice_file(slice_file, args):
     """Process one slice file using parsed CLI arguments."""
     print(f"Processing slice file: {os.path.abspath(slice_file)}")
+    print(f"Interpolation: {'enabled' if args.interpolate else 'disabled'}")
 
     if args.list:
         print_summary(slice_file)
@@ -1005,56 +1367,104 @@ def process_slice_file(slice_file, args):
         return
 
     _ensure_yt_imported()
-    print_saved_slice_metadata(slice_file, args.field, args.slice_tag)
+    slice_tags = _resolve_slice_tags(slice_file, args.field, args.slice_tag)
 
-    if args.yt_info:
-        print_yt_summary(slice_file, args.field, args.slice_tag)
+    for index, slice_tag in enumerate(slice_tags):
+        if index > 0:
+            print()
+        print_saved_slice_metadata(slice_file, args.field, slice_tag)
 
-    render_saved_slice(
-        slice_file,
-        args.field,
-        args.slice_tag,
-        args.cmap,
-        args.width,
-        args.vmin,
-        args.vmax,
-        args.output,
-        args.format,
-        args.plot,
-        args.dpi,
-        args.figsize,
-        args.normalize,
-    )
+        if args.yt_info:
+            print_yt_summary(slice_file, args.field, slice_tag)
 
-    if args.contour:
-        render_saved_slice_contour(
+        output_path = args.output if len(slice_tags) == 1 else None
+        render_saved_slice(
             slice_file,
             args.field,
-            args.slice_tag,
+            slice_tag,
             args.cmap,
             args.width,
             args.vmin,
             args.vmax,
-            None,
+            output_path,
             args.format,
             args.plot,
             args.dpi,
             args.figsize,
-            args.contour_levels,
-            args.contour_values,
-            args.contour_filled,
-            args.contour_color,
-            args.contour_backend,
             args.normalize,
+            args.interpolate,
         )
+
+        if args.render_contour:
+            render_saved_slice_contour(
+                slice_file,
+                args.field,
+                slice_tag,
+                args.cmap,
+                args.width,
+                args.vmin,
+                args.vmax,
+                None,
+                args.format,
+                args.plot,
+                args.dpi,
+                args.figsize,
+                args.contour_levels,
+                args.contour_values,
+                args.contour_filled,
+                args.contour_color,
+                args.contour_backend,
+                args.normalize,
+                args.interpolate,
+            )
+            saved = _load_saved_slice(slice_file, args.field, slice_tag)
+            zoom_output = default_zoom_contour_output_name(
+                slice_file,
+                args.field,
+                slice_tag,
+                args.format,
+                saved["attrs"],
+                normalize=args.normalize,
+            )
+            render_saved_slice_contour(
+                slice_file,
+                args.field,
+                slice_tag,
+                args.cmap,
+                args.width,
+                args.vmin,
+                args.vmax,
+                zoom_output,
+                args.format,
+                args.plot,
+                args.dpi,
+                args.figsize,
+                args.contour_levels,
+                args.contour_values,
+                args.contour_filled,
+                args.contour_color,
+                args.contour_backend,
+                args.normalize,
+                args.interpolate,
+                zoom_window=args.zoom_window,
+            )
 
 
 def main():
     parser = argparse.ArgumentParser(description="Inspect and replot saved 2D slice data from *_slices.h5 files.")
     parser.add_argument("slice_file", nargs="+", help="One or more paths to combined *_slices.h5 files")
     parser.add_argument("--list", action="store_true", help="Print the available fields and slices, then exit.")
-    parser.add_argument("--field", default=None, help="Field name to replot, for example velocity_magnitude.")
-    parser.add_argument("--slice", dest="slice_tag", default=None, help="Slice tag to replot, for example xy_center.")
+    parser.add_argument(
+        "--field",
+        default=None,
+        help="Field selector to replot: 1=vorticity_magnitude, 2=velocity_magnitude, 3=the saved scalar field when unique, or an explicit field name such as q_criterion or r_criterion.",
+    )
+    parser.add_argument(
+        "--slice",
+        dest="slice_tag",
+        default=None,
+        help="Optional slice selector to replot: 1=xy_center, 2=xy_face, 3=yz_face, 4=zx_face, or an explicit saved slice tag. If omitted, all saved slices for the selected field are rendered.",
+    )
     parser.add_argument("--cmap", default="RdBu_r", help="Matplotlib colormap")
     parser.add_argument("--width", type=float, default=None, help="Optional square plot width in domain units")
     parser.add_argument("--vmin", type=float, default=None, help="Optional lower colorbar limit")
@@ -1066,20 +1476,23 @@ def main():
     parser.add_argument("--figsize", type=float, default=8.0, help="Square figure size in inches. Default is 8.0.")
     parser.add_argument(
         "--normalize",
-        default="none",
-        choices=["none", "vorticity"],
-        help="Optional normalization preset. 'vorticity' uses U0=1 and L=1/(2*pi), and interprets contour values in normalized units.",
+        action="store_true",
+        help="Normalize automatically based on the field family: vorticity uses U0/L and velocity uses U0. Scalar fields are left unchanged.",
     )
     parser.add_argument(
         "--yt-info",
         action="store_true",
         help="Construct a one-cell-thick yt uniform-grid dataset for the selected slice and print its summary.",
     )
-    parser.add_argument("--contour", action="store_true", help="Also render a separate contour plot alongside the default yt colormap plot.")
+    parser.add_argument(
+        "--contour",
+        action="store_true",
+        help="Also render contour plots alongside the default yt colormap plots. Matching zoomed contour plots are written automatically.",
+    )
     parser.add_argument(
         "--compare",
         action="store_true",
-        help="Overlay contour lines from two or three slice files and copy the comparison plot into each slice_replots directory.",
+        help="Deprecated. Comparison contour overlays now run automatically when more than one slice file is provided.",
     )
     parser.add_argument("--contour-levels", type=int, default=12, help="Number of contour levels. Default is 12.")
     parser.add_argument(
@@ -1090,25 +1503,54 @@ def main():
     parser.add_argument("--contour-filled", action="store_true", help="Use filled contours (contourf) as background behind the contour lines.")
     parser.add_argument("--contour-color", default="k", help="Single color for contour lines, e.g. 'k', 'white', '#ff0000'. Default is 'k' (black).")
     parser.add_argument(
+        "--interpolate",
+        default="1",
+        choices=["0", "1"],
+        help="Interpolation switch for both 2D slice images and contour plots: 1 keeps the current interpolated behavior, 0 disables interpolation and uses the raw saved grid.",
+    )
+    parser.add_argument(
+        "--zoom-window",
+        default=",".join(str(value) for value in DEFAULT_ZOOM_WINDOW),
+        help="Zoom window for the extra zoom contour plots. Use xmin,xmax to apply the same range to both axes, or xmin,xmax,ymin,ymax. Default is 0.0,0.5.",
+    )
+    parser.add_argument(
         "--contour-backend",
         default="yt",
         choices=["auto", "yt", "matplotlib"],
         help="Contour renderer to use. Default is 'yt'. 'auto' tries yt first and falls back to matplotlib.",
     )
     args = parser.parse_args()
+    if args.field is not None:
+        args.field = _resolve_field_name(args.slice_file[0], args.field)
+    if args.slice_tag is not None:
+        args.slice_tag = _resolve_slice_name(args.slice_tag)
+    args.zoom_window = _parse_zoom_window(args.zoom_window)
+    args.interpolate = bool(int(args.interpolate))
+    args.auto_compare = len(args.slice_file) > 1
+    args.render_contour = args.contour or args.auto_compare
 
-    if args.field is None or args.slice_tag is None:
-        if not (args.field is None and args.slice_tag is None):
-            raise SystemExit("--field and --slice must be provided together.")
+    if args.field is None and args.slice_tag is not None:
+        raise SystemExit("--slice requires --field.")
     if args.output is not None and len(args.slice_file) > 1:
         raise SystemExit("--output can only be used when processing a single slice file.")
-    if args.compare and not args.list and not (args.field is None and args.slice_tag is None):
-        if not args.contour:
-            raise SystemExit("--compare requires --contour.")
-        if len(args.slice_file) < 2:
-            raise SystemExit("--compare requires at least two slice files.")
+    if args.output is not None and args.slice_tag is None:
+        raise SystemExit("--output requires --slice because all-slice mode writes one file per slice directory.")
+    if args.auto_compare and not args.list and args.field is not None:
         if len(args.slice_file) > len(COMPARE_COLORS):
-            raise SystemExit("--compare supports at most three slice files.")
+            raise SystemExit("Automatic comparison supports at most three slice files.")
+
+    if not args.list and args.field is not None:
+        args.slice_tags = _resolve_slice_tags(args.slice_file[0], args.field, args.slice_tag)
+        if args.auto_compare:
+            for slice_file in args.slice_file[1:]:
+                current_tags = _resolve_slice_tags(slice_file, args.field, args.slice_tag)
+                if current_tags != args.slice_tags:
+                    raise SystemExit(
+                        "All compared slice files must provide the same slice tags for the selected field. "
+                        f"Expected {args.slice_tags} in {os.path.abspath(slice_file)}, got {current_tags}."
+                    )
+    else:
+        args.slice_tags = []
 
     for index, slice_file in enumerate(args.slice_file):
         if index > 0:
@@ -1117,29 +1559,79 @@ def main():
             print()
         process_slice_file(slice_file, args)
 
-    if args.compare and not args.list and args.field is not None and args.slice_tag is not None:
-        print()
-        print("=" * 80)
-        print()
-        print("Rendering comparison contour overlay...")
-        render_compared_contours(
-            args.slice_file,
-            args.field,
-            args.slice_tag,
-            args.cmap,
-            args.width,
-            args.vmin,
-            args.vmax,
-            args.format,
-            args.plot,
-            args.dpi,
-            args.figsize,
-            args.contour_levels,
-            args.contour_values,
-            args.contour_color,
-            args.normalize,
-            contour_filled=args.contour_filled,
-        )
+    if args.auto_compare and not args.list and args.field is not None:
+        for index, slice_tag in enumerate(args.slice_tags):
+            print()
+            print("=" * 80)
+            print()
+            if len(args.slice_tags) == 1:
+                print("Rendering comparison contour overlay...")
+            else:
+                print(f"Rendering comparison contour overlay for {slice_tag}...")
+            render_compared_contours(
+                args.slice_file,
+                args.field,
+                slice_tag,
+                args.cmap,
+                args.width,
+                args.vmin,
+                args.vmax,
+                args.format,
+                args.plot,
+                args.dpi,
+                args.figsize,
+                args.contour_levels,
+                args.contour_values,
+                args.contour_color,
+                args.normalize,
+                args.interpolate,
+                contour_filled=args.contour_filled,
+            )
+            zoom_output_paths = []
+            zoom_metadata_paths = []
+            for slice_file in args.slice_file:
+                saved = _load_saved_slice(slice_file, args.field, slice_tag)
+                zoom_output_paths.append(
+                    default_zoom_comparison_output_name(
+                        slice_file,
+                        args.field,
+                        slice_tag,
+                        args.format,
+                        saved["attrs"],
+                        normalize=args.normalize,
+                    )
+                )
+                zoom_metadata_paths.append(
+                    default_zoom_comparison_metadata_name(
+                        slice_file,
+                        args.field,
+                        slice_tag,
+                        saved["attrs"],
+                        normalize=args.normalize,
+                    )
+                )
+            render_compared_contours(
+                args.slice_file,
+                args.field,
+                slice_tag,
+                args.cmap,
+                args.width,
+                args.vmin,
+                args.vmax,
+                args.format,
+                args.plot,
+                args.dpi,
+                args.figsize,
+                args.contour_levels,
+                args.contour_values,
+                args.contour_color,
+                args.normalize,
+                args.interpolate,
+                contour_filled=args.contour_filled,
+                output_paths=zoom_output_paths,
+                metadata_paths=zoom_metadata_paths,
+                zoom_window=args.zoom_window,
+            )
 
 
 if __name__ == "__main__":
