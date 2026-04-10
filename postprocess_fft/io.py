@@ -457,8 +457,8 @@ def _plot_qr_joint_pdf_matplotlib(qr_result, output_path):
             )
         colorbar = fig.colorbar(filled, ax=ax)
         colorbar.set_label(r"$\mathrm{joint\ PDF}$")
-        ax.set_xlabel(r"$r_A = R / |\nabla \mathbf{u}|_F^3$")
-        ax.set_ylabel(r"$q_A = Q / |\nabla \mathbf{u}|_F^2$")
+        ax.set_xlabel(r"$r_A$")
+        ax.set_ylabel(r"$q_A$")
         ax.set_title(r"Frobenius-Normalized $Q$-$R$ Joint PDF")
         ax.set_xlim(-settings["r_plot_limit"], settings["r_plot_limit"])
         ax.set_ylim(-settings["q_plot_limit"], settings["q_plot_limit"])
@@ -529,8 +529,8 @@ def _plot_qr_joint_pdf_yt(qr_result, output_path):
     ax = plot.axes
     ax.set_xlim(-settings["r_plot_limit"], settings["r_plot_limit"])
     ax.set_ylim(-settings["q_plot_limit"], settings["q_plot_limit"])
-    ax.set_xlabel(r"$r_A = R / |\nabla \mathbf{u}|_F^3$")
-    ax.set_ylabel(r"$q_A = Q / |\nabla \mathbf{u}|_F^2$")
+    ax.set_xlabel(r"$r_A$")
+    ax.set_ylabel(r"$q_A$")
     ax.set_title(r"Frobenius-Normalized $Q$-$R$ Joint PDF")
     ax.grid(True, which="both", alpha=0.2)
 
