@@ -1,10 +1,11 @@
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=112
-#SBATCH --time=23:59:00
+#SBATCH --time=00:59:00
 #SBATCH --job-name=turbulence_postprocess
 #SBATCH --output=turbulence_postprocess.%j.out
 #SBATCH --error=turbulence_postprocess.%j.err
+#SBATCH -p pdebug
 
 set -euo pipefail
 
