@@ -95,78 +95,89 @@ first_matching_file() {
 
 python -c "import h5py, heffte; print('h5py mpi =', h5py.get_config().mpi); print('HeFFTe =', heffte.__version__)"
 
-mapfile -t cycle_dirs < <(
-  for root in "$@"; do
-    find "${root}" -mindepth 1 -maxdepth 1 -type d -name 'cycle_*'
-  done | sort -V
-)
+# Resolve all inputs (files or cycle directories)
+final_inputs=()
+for arg in "$@"; do
+  if [[ -d "${arg}" ]]; then
+    # It's a directory: look for cycle_* subfolders (MFEM mode)
+    while IFS= read -r cycle_dir; do
+      final_inputs+=("${cycle_dir}")
+    done < <(find "${arg}" -mindepth 1 -maxdepth 1 -type d -name 'cycle_*' | sort -V)
+  elif [[ -f "${arg}" ]]; then
+    # It's a file: add it directly (Dedalus mode)
+    final_inputs+=("${arg}")
+  else
+    echo "Warning: input '${arg}' not found (skipping)" >&2
+  fi
+done
 
-if [[ ${#cycle_dirs[@]} -eq 0 ]]; then
-  echo "No cycle_* directories found under the provided roots." >&2
+if [[ ${#final_inputs[@]} -eq 0 ]]; then
+  echo "Error: No valid files or cycle directories found under the provided roots." >&2
   exit 1
 fi
 
-echo "Found ${#cycle_dirs[@]} cycle directories."
+echo "Total items to process: ${#final_inputs[@]}"
 echo "Using ${POSTPROC_RANKS} ranks across ${POSTPROC_NODES} node(s)."
 
 failures=0
 
-for cycle_dir in "${cycle_dirs[@]}"; do
-  velocity_txt="$(first_matching_file "${cycle_dir}" \
-    'velocity_sampled_data_uniform_interpolated_cycle_*.txt' \
-    'SampledData*.txt' || true)"
-  velocity_h5="$(first_matching_file "${cycle_dir}" \
-    'velocity_sampled_data_uniform_interpolated_cycle_*.h5' \
-    'SampledData*.h5' || true)"
-  density_txt="$(first_matching_file "${cycle_dir}" \
-    'density_sampled_data_uniform_interpolated_cycle_*.txt' || true)"
-  pressure_txt="$(first_matching_file "${cycle_dir}" \
-    'pressure_sampled_data_uniform_interpolated_cycle_*.txt' || true)"
-
+for item in "${final_inputs[@]}"; do
   echo
   echo "======================================================================"
-  echo "Cycle directory: ${cycle_dir}"
+  echo "Processing: ${item}"
   echo "======================================================================"
 
-  if [[ -n "${velocity_h5}" ]]; then
-    main_input="${velocity_h5}"
-  elif [[ -n "${velocity_txt}" ]]; then
-    main_input="${velocity_txt}"
-    echo "Warning: using velocity TXT input. main.py may delete it after successful conversion."
+  if [[ -d "${item}" ]]; then
+    # MFEM mode: look for velocity and scalar TXT/HDF5 files inside the cycle dir
+    velocity_txt="$(first_matching_file "${item}" \
+      'velocity_sampled_data_uniform_interpolated_cycle_*.txt' \
+      'SampledData*.txt' || true)"
+    velocity_h5="$(first_matching_file "${item}" \
+      'velocity_sampled_data_uniform_interpolated_cycle_*.h5' \
+      'SampledData*.h5' || true)"
+    density_txt="$(first_matching_file "${item}" \
+      'density_sampled_data_uniform_interpolated_cycle_*.txt' || true)"
+    pressure_txt="$(first_matching_file "${item}" \
+      'pressure_sampled_data_uniform_interpolated_cycle_*.txt' || true)"
+
+    if [[ -n "${velocity_h5}" ]]; then
+      main_input="${velocity_h5}"
+    elif [[ -n "${velocity_txt}" ]]; then
+      main_input="${velocity_txt}"
+      echo "Warning: using velocity TXT input. main.py may delete it after successful conversion."
+    else
+      echo "Skipping: no velocity sampled-data TXT or HDF5 found in ${item}." >&2
+      failures=$((failures + 1))
+      continue
+    fi
+
+    echo "Main input:   ${main_input}"
+    postproc_args=("${main_input}")
+
+    if [[ -n "${density_txt}" ]]; then
+      echo "Density TXT:  ${density_txt}"
+      postproc_args+=(--scalar-file "${density_txt}" --slice-field density)
+    fi
+    if [[ -n "${pressure_txt}" ]]; then
+      echo "Pressure TXT: ${pressure_txt}"
+      postproc_args+=(--scalar-file "${pressure_txt}" --slice-field pressure)
+    fi
   else
-    echo "Skipping: no velocity sampled-data TXT or HDF5 found." >&2
-    failures=$((failures + 1))
-    continue
+    # Dedalus mode: use the file directly
+    echo "Main input:   ${item}"
+    postproc_args=("${item}")
   fi
 
-  echo "Main input:   ${main_input}"
-  if [[ -n "${density_txt}" ]]; then
-    echo "Density TXT:  ${density_txt}"
-  else
-    echo "Density TXT:  not found (skipping density field)"
-  fi
-  if [[ -n "${pressure_txt}" ]]; then
-    echo "Pressure TXT: ${pressure_txt}"
-  else
-    echo "Pressure TXT: not found (skipping pressure field)"
-  fi
-
-  postproc_args=(
-    "${main_input}"
+  # Common slice fields and settings
+  postproc_args+=(
     --slice-field velocity_magnitude
     --slice-field vorticity_magnitude
     --slice-format pdf
     --slice-dpi 600
   )
-  if [[ -n "${density_txt}" ]]; then
-    postproc_args+=(--scalar-file "${density_txt}" --slice-field density)
-  fi
-  if [[ -n "${pressure_txt}" ]]; then
-    postproc_args+=(--scalar-file "${pressure_txt}" --slice-field pressure)
-  fi
 
   if ! srun -n "${POSTPROC_RANKS}" -N "${POSTPROC_NODES}" python "${POSTPROC_MAIN}" "${postproc_args[@]}"; then
-    echo "Post-processing failed for ${cycle_dir}" >&2
+    echo "Post-processing failed for: ${item}" >&2
     failures=$((failures + 1))
   fi
 done
@@ -174,10 +185,11 @@ done
 echo
 echo "======================================================================"
 if [[ ${failures} -eq 0 ]]; then
-  echo "Post-processing completed successfully for all cycle directories."
+  echo "Post-processing completed successfully for all items."
 else
   echo "Post-processing completed with ${failures} failure(s)." >&2
 fi
 echo "======================================================================"
 
 exit "${failures}"
+
