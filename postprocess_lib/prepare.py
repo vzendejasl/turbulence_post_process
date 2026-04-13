@@ -104,3 +104,60 @@ def ensure_structured_h5(path):
         )
 
     raise ValueError(f"Unsupported extension '{ext}'. Expected .txt or .h5.")
+
+
+def ensure_all_structured_h5(path, last_only=False):
+    """Like ensure_structured_h5 but imports all writes from multi-write Dedalus files.
+
+    When *last_only* is True, only the last write from each Dedalus file is
+    imported (the original single-snapshot behaviour).
+
+    Returns a list of structured HDF5 paths.
+    """
+    path = resolve_existing_path(path, preferred_extensions=(".h5", ".txt"))
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext == ".txt":
+        if last_only:
+            raise SystemExit(
+                f"--last-step is only supported for Dedalus HDF5 files, "
+                f"but '{path}' is a TXT file."
+            )
+        success = converter.convert_file(path)
+        if not success:
+            raise RuntimeError(f"Conversion failed for {path}")
+        return [os.path.splitext(path)[0] + ".h5"]
+
+    if ext == ".h5":
+        if rank == 0:
+            print(f"\nProcessing: {path}")
+        exists = _broadcast_exists(path)
+        if not exists:
+            raise FileNotFoundError(path)
+
+        structured = validate_structured_h5(path) if rank == 0 else None
+        structured = comm.bcast(structured, root=0)
+        if structured:
+            if last_only:
+                raise SystemExit(
+                    f"--last-step is only supported for Dedalus HDF5 files, "
+                    f"but '{path}' is already a structured FFT-ready HDF5."
+                )
+            if rank == 0:
+                print("  Input is already structured FFT-ready HDF5.")
+                print(f"  Using existing HDF5: {path}")
+            return [path]
+
+        dedalus_field_output = validate_dedalus_field_h5(path) if rank == 0 else None
+        dedalus_field_output = comm.bcast(dedalus_field_output, root=0)
+        if dedalus_field_output:
+            if last_only:
+                return [converter.import_dedalus_snapshot_to_structured_h5(path)]
+            return converter.import_all_dedalus_snapshots_to_structured_h5(path)
+
+        raise ValueError(
+            f"{path} is not a structured FFT-ready HDF5 file "
+            "or a supported Dedalus field-output HDF5 file."
+        )
+
+    raise ValueError(f"Unsupported extension '{ext}'. Expected .txt or .h5.")

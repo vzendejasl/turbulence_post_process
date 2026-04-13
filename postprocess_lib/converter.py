@@ -145,9 +145,18 @@ def dedalus_snapshot_info(path, write_index=-1):
 
 
 def dedalus_snapshot_output_path(input_path, snapshot_info):
-    """Return the structured-output path for one imported Dedalus snapshot."""
-    base, _ = os.path.splitext(input_path)
-    return f"{base}_write{snapshot_info['write_number']:05d}.h5"
+    """Return the structured-output path for one imported Dedalus snapshot.
+
+    Output is placed under ``post_process/cycle_<step>/`` next to the input
+    file, where *step* is the cycle number (or write number when the cycle is
+    unavailable).
+    """
+    input_dir = os.path.dirname(os.path.abspath(input_path))
+    step = snapshot_info["cycle"] if snapshot_info["cycle"] is not None else snapshot_info["write_number"]
+    cycle_dir = os.path.join(input_dir, "post_process", f"cycle_{step}")
+    os.makedirs(cycle_dir, exist_ok=True)
+    base = os.path.splitext(os.path.basename(input_path))[0]
+    return os.path.join(cycle_dir, f"{base}_write{snapshot_info['write_number']:05d}.h5")
 
 
 def dedalus_header_lines(input_path, snapshot_info):
@@ -784,6 +793,28 @@ def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write
     if not success:
         raise RuntimeError(f"Failed to import Dedalus snapshot from {input_path}")
     return output_path
+
+
+def import_all_dedalus_snapshots_to_structured_h5(input_path):
+    """Import all writes from a multi-write Dedalus field-output file.
+
+    Returns a list of structured HDF5 paths, one per write.
+    """
+    num_writes = None
+    if rank == 0:
+        with h5py.File(input_path, "r") as hf:
+            num_writes = int(hf["tasks"]["u"].shape[0])
+    num_writes = comm.bcast(num_writes, root=0)
+
+    if rank == 0 and num_writes > 1:
+        print(f"\n  Dedalus file contains {num_writes} writes; importing all snapshots...")
+
+    output_paths = []
+    for write_idx in range(num_writes):
+        output_path = import_dedalus_snapshot_to_structured_h5(input_path, write_index=write_idx)
+        output_paths.append(output_path)
+
+    return output_paths
 
 
 def write_scalar_field_to_h5(

@@ -231,6 +231,45 @@ def save_spectra(
         handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
 
 
+def save_structure_function(
+    r_values,
+    s_longitudinal,
+    filename,
+    step_number,
+    time_value,
+    domain_length,
+    large_r_reference,
+    large_r_relative_difference,
+):
+    """Save isotropic longitudinal structure function data beside the spectra."""
+    stem = _spectra_output_stem(filename)
+    output_path = f"{stem}_structure_function.txt"
+
+    summary = np.column_stack(
+        (
+            np.asarray(r_values, dtype=np.float64),
+            np.asarray(s_longitudinal, dtype=np.float64),
+        )
+    )
+
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(f"# Step: {step_number}, Time: {float(time_value):.16e}\n")
+        handle.write(f"# Domain length used in kernel: {float(domain_length):.16e}\n")
+        handle.write(
+            f"# Large-r reference (4/3 * sum(E_total)): "
+            f"{float(large_r_reference):.16e}\n"
+        )
+        handle.write(
+            f"# Relative difference at largest saved r: "
+            f"{float(large_r_relative_difference):.16e}\n"
+        )
+        handle.write(f"# Columns: {'r':>23s}, {'S_L':>23s}\n")
+        for row in summary:
+            handle.write(", ".join(f"{value:>23.16e}" for value in row) + "\n")
+
+    return output_path
+
+
 def _plot_style():
     style = {
         "font.family": "serif",

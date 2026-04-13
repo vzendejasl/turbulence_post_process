@@ -153,6 +153,43 @@ def compensate_spectrum(k_centers, values, exponent):
     return compensated
 
 
+def compute_longitudinal_structure_function_from_spectrum(
+    k_shells,
+    energy_shells,
+    r_values,
+    domain_length,
+):
+    """Compute isotropic longitudinal S_L(r) from shell-integrated E(k)."""
+    k_shells = np.asarray(k_shells, dtype=np.float64)
+    energy_shells = np.asarray(energy_shells, dtype=np.float64)
+    r_values = np.asarray(r_values, dtype=np.float64)
+
+    if k_shells.shape != energy_shells.shape:
+        raise ValueError("k_shells and energy_shells must have the same shape.")
+    if domain_length <= 0.0:
+        raise ValueError("domain_length must be positive.")
+
+    k_phys = (2.0 * np.pi / float(domain_length)) * k_shells
+    kr = np.outer(r_values, k_phys)
+
+    kernel = np.empty_like(kr, dtype=np.float64)
+    small_mask = np.abs(kr) < 1.0e-4
+    large_mask = ~small_mask
+
+    if np.any(large_mask):
+        kr_large = kr[large_mask]
+        kernel[large_mask] = (
+            1.0 / 3.0
+            - (np.sin(kr_large) - kr_large * np.cos(kr_large)) / (kr_large ** 3)
+        )
+    if np.any(small_mask):
+        kr_small = kr[small_mask]
+        kernel[small_mask] = (kr_small ** 2) / 30.0 - (kr_small ** 4) / 840.0
+
+    s_longitudinal = 4.0 * np.sum(kernel * energy_shells[np.newaxis, :], axis=1, dtype=np.float64)
+    return r_values, s_longitudinal
+
+
 def compute_qr_joint_pdf(
     dux_dx,
     dux_dy,

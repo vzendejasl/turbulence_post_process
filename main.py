@@ -19,7 +19,7 @@ if not MPI.Is_initialized():
 from postprocess_fft.app import analyze_file_parallel
 from postprocess_fft.io import plot_spectra
 from postprocess_lib import converter
-from postprocess_lib.prepare import ensure_structured_h5, resolve_existing_path
+from postprocess_lib.prepare import ensure_all_structured_h5, resolve_existing_path
 from postprocess_vis.app import run_visualization
 
 
@@ -90,6 +90,11 @@ Examples:
         help="Optional output path for the combined slice-data HDF5 file for a single input file.",
     )
     parser.add_argument("--slice-plot", action="store_true", help="Also display slice plots on rank 0")
+    parser.add_argument(
+        "--last-step",
+        action="store_true",
+        help="Only process the last write/snapshot from each Dedalus HDF5 file.",
+    )
     args = parser.parse_args()
 
     comm = MPI.COMM_WORLD
@@ -124,69 +129,78 @@ Examples:
                 print(f"FILE {idx + 1}/{len(args.data_files)}")
                 print("=" * 72)
                 print(f"Input: {path}")
-            prepared_path = ensure_structured_h5(path)
-            if rank == 0:
-                prepared.append(prepared_path)
+            prepared_paths = ensure_all_structured_h5(path, last_only=args.last_step)
 
-            if args.scalar_file:
-                scalar_paths = [
-                    resolve_existing_path(scalar_path)
-                    for scalar_path in args.scalar_file
-                ]
-                added_scalar_fields = converter.append_scalar_fields_to_h5(
-                    scalar_paths,
-                    prepared_path,
-                    create_scalar_h5=True,
-                )
-                if rank == 0 and added_scalar_fields:
-                    print("Added scalar field datasets:")
-                    for field_name in added_scalar_fields:
-                        print(f"  {field_name}")
+            for write_idx, prepared_path in enumerate(prepared_paths):
+                if rank == 0:
+                    if len(prepared_paths) > 1:
+                        print()
+                        print(f"  --- Write {write_idx + 1}/{len(prepared_paths)} ---")
+                    prepared.append(prepared_path)
 
-            if not args.skip_fft:
-                if rank == 0:
-                    print()
-                    print("-" * 60)
-                    print("FFT / SPECTRA")
-                    print("-" * 60)
-                fft_result = analyze_file_parallel(
-                    prepared_path,
-                    comm,
-                    header_lines=None,
-                    chunk_size=args.chunk_size,
-                    backend_name=args.backend,
-                    visualize=False,
-                )
-                if rank == 0:
-                    fft_results.append(fft_result)
-            comm.Barrier()
+                if args.scalar_file:
+                    scalar_paths = [
+                        resolve_existing_path(scalar_path)
+                        for scalar_path in args.scalar_file
+                    ]
+                    added_scalar_fields = converter.append_scalar_fields_to_h5(
+                        scalar_paths,
+                        prepared_path,
+                        create_scalar_h5=True,
+                    )
+                    if rank == 0 and added_scalar_fields:
+                        print("Added scalar field datasets:")
+                        for field_name in added_scalar_fields:
+                            print(f"  {field_name}")
 
-            if not args.skip_slice:
-                if rank == 0:
-                    print()
-                slice_output = args.slice_output if idx == 0 else None
-                rendered, slice_data_path = run_visualization(
-                    prepared_path,
-                    axis=args.slice_axis,
-                    field_names=args.slice_field,
-                    cmap=args.slice_cmap,
-                    width=args.slice_width,
-                    output=slice_output,
-                    plot=args.slice_plot,
-                    comm=comm,
-                    slice_specs=args.slice,
-                    assume_structured_h5=True,
-                    backend_name=args.backend,
-                    output_format=args.slice_format,
-                    save_dpi=args.slice_dpi,
-                    figure_size=args.slice_figsize,
-                    save_slice_data=not args.no_slice_data,
-                    slice_data_output=args.slice_data_output if idx == 0 else None,
-                )
-                if rank == 0:
-                    slice_outputs.extend(rendered)
-                    if slice_data_path is not None:
-                        slice_data_outputs.append(slice_data_path)
+                if not args.skip_fft:
+                    if rank == 0:
+                        print()
+                        print("-" * 60)
+                        print("FFT / SPECTRA")
+                        print("-" * 60)
+                    fft_result = analyze_file_parallel(
+                        prepared_path,
+                        comm,
+                        header_lines=None,
+                        chunk_size=args.chunk_size,
+                        backend_name=args.backend,
+                        visualize=False,
+                    )
+                    if rank == 0:
+                        fft_results.append(fft_result)
+                comm.Barrier()
+
+                if not args.skip_slice:
+                    if rank == 0:
+                        print()
+                    slice_output = args.slice_output if idx == 0 and write_idx == 0 else None
+                    rendered, slice_data_path = run_visualization(
+                        prepared_path,
+                        axis=args.slice_axis,
+                        field_names=args.slice_field,
+                        cmap=args.slice_cmap,
+                        width=args.slice_width,
+                        output=slice_output,
+                        plot=args.slice_plot,
+                        comm=comm,
+                        slice_specs=args.slice,
+                        assume_structured_h5=True,
+                        backend_name=args.backend,
+                        output_format=args.slice_format,
+                        save_dpi=args.slice_dpi,
+                        figure_size=args.slice_figsize,
+                        save_slice_data=not args.no_slice_data,
+                        slice_data_output=(
+                            args.slice_data_output
+                            if idx == 0 and write_idx == 0
+                            else None
+                        ),
+                    )
+                    if rank == 0:
+                        slice_outputs.extend(rendered)
+                        if slice_data_path is not None:
+                            slice_data_outputs.append(slice_data_path)
         except Exception as exc:
             if rank == 0:
                 print(f"  CRITICAL ERROR processing {path}: {exc}")

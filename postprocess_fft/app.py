@@ -18,6 +18,7 @@ from .io import read_data_file_header
 from .io import read_structured_local_fields
 from .io import plot_qr_joint_pdf
 from .io import save_qr_joint_pdf
+from .io import save_structure_function
 from .io import save_spectra
 from .io import structured_h5_metadata
 from .layout import box_shape
@@ -28,6 +29,7 @@ from .spectra import compute_energy_dissipation_enstrophy
 from .spectra import compute_energy_spectrum_from_modes
 from .spectra import compute_enstrophy_spectrum_from_modes
 from .spectra import compute_helicity_spectrum_from_modes
+from .spectra import compute_longitudinal_structure_function_from_spectrum
 from .spectra import compute_qr_joint_pdf
 from .spectra import compensate_spectrum
 from .transform import backward_field
@@ -244,6 +246,25 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
         E_rot = zero_near_zero(E_rot)
         Enst = zero_near_zero(Enst)
         Hel = zero_near_zero(Hel)
+        domain_length = float(dx) * float(shape[0])
+        max_r_index = shape[0] // 2
+        r_values = np.arange(max_r_index + 1, dtype=np.float64) * float(dx)
+        _, structure_function_longitudinal = compute_longitudinal_structure_function_from_spectrum(
+            k_centers,
+            E_total,
+            r_values,
+            domain_length,
+        )
+        structure_function_longitudinal = zero_near_zero(structure_function_longitudinal)
+        large_r_reference = (4.0 / 3.0) * float(np.sum(E_total, dtype=np.float64))
+        large_r_relative_difference = abs(
+            float(structure_function_longitudinal[-1]) - large_r_reference
+        ) / max(abs(large_r_reference), 1.0e-30)
+        print("Longitudinal structure function diagnostic:")
+        print(f"  Largest saved r: {float(r_values[-1]):.8f}")
+        print(f"  S_L(r_max): {float(structure_function_longitudinal[-1]):.8f}")
+        print(f"  4/3 * sum(E_total): {large_r_reference:.8f}")
+        print(f"  Relative difference at r_max: {large_r_relative_difference:.8e}")
         E_total_comp = zero_near_zero(compensate_spectrum(k_centers, E_total, 5.0 / 3.0))
         E_comp_comp = zero_near_zero(compensate_spectrum(k_centers, E_comp, 5.0 / 3.0))
         E_rot_comp = zero_near_zero(compensate_spectrum(k_centers, E_rot, 5.0 / 3.0))
@@ -274,6 +295,16 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
             rot_ke,
             total_enstrophy,
         )
+        structure_function_path = save_structure_function(
+            r_values,
+            structure_function_longitudinal,
+            filename,
+            step_number,
+            time_value,
+            domain_length,
+            large_r_reference,
+            large_r_relative_difference,
+        )
         qr_h5_path = save_qr_joint_pdf(
             qr_joint_pdf,
             filename,
@@ -299,6 +330,11 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
             "Enstrophy_compensated": Enst_comp,
             "step_number": step_number,
             "time_value": time_value,
+            "r_values": r_values,
+            "S_L": structure_function_longitudinal,
+            "structure_function_path": structure_function_path,
+            "S_L_large_r_reference": large_r_reference,
+            "S_L_large_r_relative_difference": large_r_relative_difference,
             "qr_joint_pdf_h5": qr_h5_path,
             "qr_joint_pdf_pdf": qr_pdf_path,
         }
