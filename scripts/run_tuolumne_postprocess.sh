@@ -12,23 +12,25 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  sbatch scripts/run_tuolumne_postprocess.sh <sampled_data_root> [<sampled_data_root> ...]
+  sbatch scripts/run_tuolumne_postprocess.sh <input> [<input> ...]
 
-Example:
+  Each <input> can be:
+    - a directory containing cycle_* subdirectories (MFEM sampled-data mode)
+    - a Dedalus field-output HDF5 file
+
+Example (MFEM):
   sbatch scripts/run_tuolumne_postprocess.sh \
-    /path/to/blast_tgv3Dk2r5_SampledData \
-    /path/to/blast_tgv3Dk2r4_SampledData
+    /path/to/blast_tgv3Dk2r5_SampledData
 
-Behavior:
-  - uses one batch allocation total
-  - finds cycle_* subdirectories under each provided root
-  - runs one srun step per cycle inside that same allocation
-  - appends density and pressure scalar TXT files when they are available
-  - renders only:
-      velocity_magnitude
-      vorticity_magnitude
-      density (if available)
-      pressure (if available)
+Example (Dedalus):
+  sbatch -N2 --ntasks-per-node=96 scripts/run_tuolumne_postprocess.sh \
+    /path/to/tgv_fields/tgv_fields_s*.h5
+
+Environment variables:
+  POSTPROC_LAST_STEP    Set to 1 to only process the last write from each
+                        Dedalus file (default: 0, process all writes)
+  POSTPROC_SKIP_FFT     Set to 1 to skip the FFT/spectra step
+  POSTPROC_SKIP_SLICE   Set to 1 to skip the slice-rendering step
 
 Notes:
   - if a velocity .h5 already exists in the cycle directory, it is used directly
@@ -56,6 +58,9 @@ POSTPROC_HEFFTE_PY="${POSTPROC_HEFFTE_PY:-/p/lustre5/zendejas/third_party/heffte
 POSTPROC_HEFFTE_LIB="${POSTPROC_HEFFTE_LIB:-/p/lustre5/zendejas/third_party/heffte/install/lib64}"
 POSTPROC_HDF5_DIR="${POSTPROC_HDF5_DIR:-/opt/cray/pe/hdf5-parallel/1.14.3.7/gnu/12.2}"
 POSTPROC_GCC_MODULE="${POSTPROC_GCC_MODULE:-gcc/13.3.1}"
+POSTPROC_LAST_STEP="${POSTPROC_LAST_STEP:-0}"
+POSTPROC_SKIP_FFT="${POSTPROC_SKIP_FFT:-0}"
+POSTPROC_SKIP_SLICE="${POSTPROC_SKIP_SLICE:-0}"
 
 module --force purge
 module load StdEnv
@@ -162,23 +167,51 @@ for item in "${final_inputs[@]}"; do
       echo "Pressure TXT: ${pressure_txt}"
       postproc_args+=(--scalar-file "${pressure_txt}" --slice-field pressure)
     fi
+
+    postproc_args+=(
+      --slice-field velocity_magnitude
+      --slice-field vorticity_magnitude
+      --slice-format pdf
+      --slice-dpi 600
+    )
+
+    if [[ "${POSTPROC_SKIP_FFT}" == "1" ]]; then
+      postproc_args+=(--skip-fft)
+    fi
+    if [[ "${POSTPROC_SKIP_SLICE}" == "1" ]]; then
+      postproc_args+=(--skip-slice)
+    fi
+
+    if ! srun -n "${POSTPROC_RANKS}" -N "${POSTPROC_NODES}" python "${POSTPROC_MAIN}" "${postproc_args[@]}"; then
+      echo "Post-processing failed for: ${item}" >&2
+      failures=$((failures + 1))
+    fi
   else
-    # Dedalus mode: use the file directly
+    # Dedalus mode: process one file at a time with its own srun
     echo "Main input:   ${item}"
     postproc_args=("${item}")
-  fi
 
-  # Common slice fields and settings
-  postproc_args+=(
-    --slice-field velocity_magnitude
-    --slice-field vorticity_magnitude
-    --slice-format pdf
-    --slice-dpi 600
-  )
+    postproc_args+=(
+      --slice-field velocity_magnitude
+      --slice-field vorticity_magnitude
+      --slice-format pdf
+      --slice-dpi 600
+    )
 
-  if ! srun -n "${POSTPROC_RANKS}" -N "${POSTPROC_NODES}" python "${POSTPROC_MAIN}" "${postproc_args[@]}"; then
-    echo "Post-processing failed for: ${item}" >&2
-    failures=$((failures + 1))
+    if [[ "${POSTPROC_LAST_STEP}" == "1" ]]; then
+      postproc_args+=(--last-step)
+    fi
+    if [[ "${POSTPROC_SKIP_FFT}" == "1" ]]; then
+      postproc_args+=(--skip-fft)
+    fi
+    if [[ "${POSTPROC_SKIP_SLICE}" == "1" ]]; then
+      postproc_args+=(--skip-slice)
+    fi
+
+    if ! srun -n "${POSTPROC_RANKS}" -N "${POSTPROC_NODES}" python "${POSTPROC_MAIN}" "${postproc_args[@]}"; then
+      echo "Post-processing failed for: ${item}" >&2
+      failures=$((failures + 1))
+    fi
   fi
 done
 
@@ -192,4 +225,3 @@ fi
 echo "======================================================================"
 
 exit "${failures}"
-

@@ -8,6 +8,8 @@ import numpy as np
 from mpi4py import MPI
 
 from .common import global_mean_energy
+from .transform import backward_field
+from .transform import forward_field
 from .transform import local_integer_wavenumber_mesh
 
 
@@ -188,6 +190,96 @@ def compute_longitudinal_structure_function_from_spectrum(
 
     s_longitudinal = 4.0 * np.sum(kernel * energy_shells[np.newaxis, :], axis=1, dtype=np.float64)
     return r_values, s_longitudinal
+
+
+def compute_third_order_structure_function_direct(vx, vy, vz, dx, dy, dz):
+    """Compute axis-aligned third-order longitudinal structure functions in physical space."""
+    vx = np.asarray(vx, dtype=np.float64)
+    vy = np.asarray(vy, dtype=np.float64)
+    vz = np.asarray(vz, dtype=np.float64)
+
+    if vx.shape != vy.shape or vx.shape != vz.shape:
+        raise ValueError("vx, vy, and vz must have the same shape.")
+
+    nx, ny, nz = vx.shape
+    if nx != ny or nx != nz:
+        raise ValueError("Third-order direct structure function currently requires a cubic grid.")
+    if not (np.isclose(dx, dy) and np.isclose(dx, dz)):
+        raise ValueError("Third-order direct structure function currently requires uniform spacing dx = dy = dz.")
+
+    max_shift = nx // 2
+    shifts = np.arange(max_shift + 1, dtype=np.int64)
+    r_values = shifts.astype(np.float64) * float(dx)
+
+    s3_x = np.empty_like(r_values, dtype=np.float64)
+    s3_y = np.empty_like(r_values, dtype=np.float64)
+    s3_z = np.empty_like(r_values, dtype=np.float64)
+
+    for idx, shift in enumerate(shifts):
+        delta_x = np.roll(vx, -int(shift), axis=0) - vx
+        delta_y = np.roll(vy, -int(shift), axis=1) - vy
+        delta_z = np.roll(vz, -int(shift), axis=2) - vz
+
+        s3_x[idx] = float(np.mean(delta_x ** 3, dtype=np.float64))
+        s3_y[idx] = float(np.mean(delta_y ** 3, dtype=np.float64))
+        s3_z[idx] = float(np.mean(delta_z ** 3, dtype=np.float64))
+
+    s3_avg = (s3_x + s3_y + s3_z) / 3.0
+    return r_values, s3_x, s3_y, s3_z, s3_avg
+
+
+def _third_order_validate_grid(shape, dx, dy, dz):
+    nx, ny, nz = shape
+    if nx != ny or nx != nz:
+        raise ValueError("Third-order structure function currently requires a cubic grid.")
+    if not (np.isclose(dx, dy) and np.isclose(dx, dz)):
+        raise ValueError("Third-order structure function currently requires uniform spacing dx = dy = dz.")
+
+
+def _extract_axis_line_from_local_volume(local_volume, shape, box, axis, comm):
+    count = int(shape[axis] // 2) + 1
+    local_line = np.zeros(count, dtype=np.float64)
+    box_low = tuple(int(value) for value in box.low)
+    box_high = tuple(int(value) for value in box.high)
+
+    for shift in range(count):
+        global_index = [0, 0, 0]
+        global_index[axis] = shift
+        if all(box_low[dim] <= global_index[dim] <= box_high[dim] for dim in range(3)):
+            local_index = tuple(global_index[dim] - box_low[dim] for dim in range(3))
+            local_line[shift] = float(local_volume[local_index])
+
+    return comm.allreduce(local_line, op=MPI.SUM)
+
+
+def _compute_axis_third_order_fft(component, axis, plan, local_shape, shape, box, comm):
+    global_points = float(np.prod(shape))
+    component_sq = component ** 2
+
+    component_k = forward_field(plan, component).reshape(local_shape, order="C")
+    component_sq_k = forward_field(plan, component_sq).reshape(local_shape, order="C")
+
+    corr_sq_u_local = backward_field(plan, np.conj(component_sq_k) * component_k, local_shape)
+    corr_u_sq_local = backward_field(plan, np.conj(component_k) * component_sq_k, local_shape)
+
+    corr_sq_u = _extract_axis_line_from_local_volume(corr_sq_u_local, shape, box, axis, comm) / global_points
+    corr_u_sq = _extract_axis_line_from_local_volume(corr_u_sq_local, shape, box, axis, comm) / global_points
+
+    return 3.0 * (corr_sq_u - corr_u_sq)
+
+
+def compute_third_order_structure_function_fft(plan, local_shape, box, vx, vy, vz, shape, dx, dy, dz, comm):
+    """Compute axis-aligned third-order longitudinal structure functions via HeFFTe FFT correlations."""
+    _third_order_validate_grid(shape, dx, dy, dz)
+
+    count = int(shape[0] // 2) + 1
+    r_values = np.arange(count, dtype=np.float64) * float(dx)
+
+    s3_x = _compute_axis_third_order_fft(vx, 0, plan, local_shape, shape, box, comm)
+    s3_y = _compute_axis_third_order_fft(vy, 1, plan, local_shape, shape, box, comm)
+    s3_z = _compute_axis_third_order_fft(vz, 2, plan, local_shape, shape, box, comm)
+    s3_avg = (s3_x + s3_y + s3_z) / 3.0
+    return r_values, s3_x, s3_y, s3_z, s3_avg
 
 
 def compute_qr_joint_pdf(

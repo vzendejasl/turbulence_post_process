@@ -270,6 +270,56 @@ def save_structure_function(
     return output_path
 
 
+def save_third_order_structure_function(
+    r_values,
+    s3_x,
+    s3_y,
+    s3_z,
+    s3_avg,
+    max_abs_directional_spread,
+    r_at_max_abs_directional_spread,
+    max_rel_directional_spread,
+    r_at_max_rel_directional_spread,
+    filename,
+    step_number,
+    time_value,
+    domain_length,
+):
+    """Save axis-aligned third-order structure function data beside the spectra."""
+    stem = _spectra_output_stem(filename)
+    output_path = f"{stem}_structure_function_third_order.txt"
+
+    summary = np.column_stack(
+        (
+            np.asarray(r_values, dtype=np.float64),
+            np.asarray(s3_x, dtype=np.float64),
+            np.asarray(s3_y, dtype=np.float64),
+            np.asarray(s3_z, dtype=np.float64),
+            np.asarray(s3_avg, dtype=np.float64),
+        )
+    )
+
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(f"# Step: {step_number}, Time: {float(time_value):.16e}\n")
+        handle.write(f"# Domain length used in physical shifts: {float(domain_length):.16e}\n")
+        handle.write(
+            f"# Max absolute directional spread: {float(max_abs_directional_spread):.16e} "
+            f"at r = {float(r_at_max_abs_directional_spread):.16e}\n"
+        )
+        handle.write(
+            f"# Max relative directional spread: {float(max_rel_directional_spread):.16e} "
+            f"at r = {float(r_at_max_rel_directional_spread):.16e}\n"
+        )
+        handle.write(
+            f"# Columns: {'r':>23s}, {'S3_x':>23s}, {'S3_y':>23s}, "
+            f"{'S3_z':>23s}, {'S3_avg':>23s}\n"
+        )
+        for row in summary:
+            handle.write(", ".join(f"{value:>23.16e}" for value in row) + "\n")
+
+    return output_path
+
+
 def _plot_style():
     style = {
         "font.family": "serif",
