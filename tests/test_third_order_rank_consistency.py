@@ -75,14 +75,19 @@ def compare_rank_family(case_name: str, case_path: Path) -> list[str]:
         }
 
     reference = metrics_by_rank[1]
-    if int(reference["num_columns"]) != 5:
-        raise AssertionError(f"Expected 5 columns in third-order file, got {reference['num_columns']}")
+    if int(reference["num_columns"]) != 6:
+        raise AssertionError(f"Expected 6 columns in combined structure-function file, got {reference['num_columns']}")
+    if int(reference["shell_num_columns"]) != 3:
+        raise AssertionError(f"Expected 3 columns in shell structure-function file, got {reference['shell_num_columns']}")
 
     reference_r = np.asarray(reference["r"], dtype=np.float64)
     reference_s3_x = np.asarray(reference["s3_x"], dtype=np.float64)
     reference_s3_y = np.asarray(reference["s3_y"], dtype=np.float64)
     reference_s3_z = np.asarray(reference["s3_z"], dtype=np.float64)
     reference_s3_avg = np.asarray(reference["s3_avg"], dtype=np.float64)
+    reference_shell_r = np.asarray(reference["shell_r"], dtype=np.float64)
+    reference_s3_shell = np.asarray(reference["s3_shell"], dtype=np.float64)
+    reference_shell_count = np.asarray(reference["shell_count"], dtype=np.float64)
 
     lines.append(f"  Reference rank count: {RANKS[0]}")
     lines.append(f"  Third-order length:    {len(reference_r)}")
@@ -90,14 +95,19 @@ def compare_rank_family(case_name: str, case_path: Path) -> list[str]:
 
     for ranks in RANKS[1:]:
         trial = metrics_by_rank[ranks]
-        if int(trial["num_columns"]) != 5:
-            raise AssertionError(f"Expected 5 columns in third-order file, got {trial['num_columns']}")
+        if int(trial["num_columns"]) != 6:
+            raise AssertionError(f"Expected 6 columns in combined structure-function file, got {trial['num_columns']}")
+        if int(trial["shell_num_columns"]) != 3:
+            raise AssertionError(f"Expected 3 columns in shell structure-function file, got {trial['shell_num_columns']}")
 
         trial_r = np.asarray(trial["r"], dtype=np.float64)
         trial_s3_x = np.asarray(trial["s3_x"], dtype=np.float64)
         trial_s3_y = np.asarray(trial["s3_y"], dtype=np.float64)
         trial_s3_z = np.asarray(trial["s3_z"], dtype=np.float64)
         trial_s3_avg = np.asarray(trial["s3_avg"], dtype=np.float64)
+        trial_shell_r = np.asarray(trial["shell_r"], dtype=np.float64)
+        trial_s3_shell = np.asarray(trial["s3_shell"], dtype=np.float64)
+        trial_shell_count = np.asarray(trial["shell_count"], dtype=np.float64)
 
         common_len = min(len(reference_r), len(trial_r))
         r_rel = relative_l2_error(trial_r[:common_len], reference_r[:common_len])
@@ -105,6 +115,16 @@ def compare_rank_family(case_name: str, case_path: Path) -> list[str]:
         s3_y_rel = relative_l2_error(trial_s3_y[:common_len], reference_s3_y[:common_len])
         s3_z_rel = relative_l2_error(trial_s3_z[:common_len], reference_s3_z[:common_len])
         s3_avg_rel = relative_l2_error(trial_s3_avg[:common_len], reference_s3_avg[:common_len])
+        shell_common_len = min(len(reference_shell_r), len(trial_shell_r))
+        shell_r_rel = relative_l2_error(trial_shell_r[:shell_common_len], reference_shell_r[:shell_common_len])
+        s3_shell_rel = relative_l2_error(
+            trial_s3_shell[:shell_common_len],
+            reference_s3_shell[:shell_common_len],
+        )
+        shell_count_rel = relative_l2_error(
+            trial_shell_count[:shell_common_len],
+            reference_shell_count[:shell_common_len],
+        )
 
         lines.extend(
             [
@@ -114,17 +134,35 @@ def compare_rank_family(case_name: str, case_path: Path) -> list[str]:
                 f"    Relative L2 error in S3_y:   {s3_y_rel:.16e}",
                 f"    Relative L2 error in S3_z:   {s3_z_rel:.16e}",
                 f"    Relative L2 error in S3_avg: {s3_avg_rel:.16e}",
+                f"    Relative L2 error in shell r:          {shell_r_rel:.16e}",
+                f"    Relative L2 error in S3_shell:         {s3_shell_rel:.16e}",
+                f"    Relative L2 error in shell_count:      {shell_count_rel:.16e}",
             ]
         )
 
-        if any(value > REL_TOL for value in (r_rel, s3_x_rel, s3_y_rel, s3_z_rel, s3_avg_rel)):
+        if any(
+            value > REL_TOL
+            for value in (
+                r_rel,
+                s3_x_rel,
+                s3_y_rel,
+                s3_z_rel,
+                s3_avg_rel,
+                shell_r_rel,
+                s3_shell_rel,
+                shell_count_rel,
+            )
+        ):
             raise AssertionError(
                 f"Third-order rank consistency failed for {case_name} at {ranks} ranks: "
                 f"r_rel={r_rel:.16e}, "
                 f"S3_x_rel={s3_x_rel:.16e}, "
                 f"S3_y_rel={s3_y_rel:.16e}, "
                 f"S3_z_rel={s3_z_rel:.16e}, "
-                f"S3_avg_rel={s3_avg_rel:.16e}"
+                f"S3_avg_rel={s3_avg_rel:.16e}, "
+                f"shell_r_rel={shell_r_rel:.16e}, "
+                f"S3_shell_rel={s3_shell_rel:.16e}, "
+                f"shell_count_rel={shell_count_rel:.16e}"
             )
 
     return lines

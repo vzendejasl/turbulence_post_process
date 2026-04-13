@@ -157,6 +157,15 @@ def read_structured_local_fields(filename, local_box, comm):
     return vx, vy, vz
 
 
+def read_structured_global_fields(filename):
+    """Read full structured HDF5 velocity fields on one rank."""
+    with h5py.File(filename, "r") as hf:
+        vx = np.asarray(hf["fields"]["vx"][:], dtype=np.float64)
+        vy = np.asarray(hf["fields"]["vy"][:], dtype=np.float64)
+        vz = np.asarray(hf["fields"]["vz"][:], dtype=np.float64)
+    return vx, vy, vz
+
+
 def _spectra_output_stem(filename):
     directory = os.path.dirname(os.path.abspath(filename))
     base = os.path.splitext(os.path.basename(filename))[0]
@@ -270,28 +279,35 @@ def save_structure_function(
     return output_path
 
 
-def save_third_order_structure_function(
+def save_structure_functions(
     r_values,
+    s2_longitudinal,
     s3_x,
     s3_y,
     s3_z,
     s3_avg,
-    max_abs_directional_spread,
-    r_at_max_abs_directional_spread,
-    max_rel_directional_spread,
-    r_at_max_rel_directional_spread,
+    shell_r_values,
+    s3_shell,
+    shell_counts,
     filename,
     step_number,
     time_value,
     domain_length,
+    large_r_reference,
+    large_r_relative_difference,
+    max_abs_directional_spread,
+    r_at_max_abs_directional_spread,
+    max_rel_directional_spread,
+    r_at_max_rel_directional_spread,
 ):
-    """Save axis-aligned third-order structure function data beside the spectra."""
+    """Save second- and third-order structure functions in one combined text file."""
     stem = _spectra_output_stem(filename)
-    output_path = f"{stem}_structure_function_third_order.txt"
+    output_path = f"{stem}_structure_function.txt"
 
     summary = np.column_stack(
         (
             np.asarray(r_values, dtype=np.float64),
+            np.asarray(s2_longitudinal, dtype=np.float64),
             np.asarray(s3_x, dtype=np.float64),
             np.asarray(s3_y, dtype=np.float64),
             np.asarray(s3_z, dtype=np.float64),
@@ -301,18 +317,76 @@ def save_third_order_structure_function(
 
     with open(output_path, "w", encoding="utf-8") as handle:
         handle.write(f"# Step: {step_number}, Time: {float(time_value):.16e}\n")
-        handle.write(f"# Domain length used in physical shifts: {float(domain_length):.16e}\n")
+        handle.write(f"# Domain length used in kernel/physical shifts: {float(domain_length):.16e}\n")
         handle.write(
-            f"# Max absolute directional spread: {float(max_abs_directional_spread):.16e} "
+            f"# Large-r reference for S2 (4/3 * sum(E_total)): "
+            f"{float(large_r_reference):.16e}\n"
+        )
+        handle.write(
+            f"# Relative difference in S2 at largest saved r: "
+            f"{float(large_r_relative_difference):.16e}\n"
+        )
+        handle.write(
+            f"# Max absolute directional spread in S3: {float(max_abs_directional_spread):.16e} "
             f"at r = {float(r_at_max_abs_directional_spread):.16e}\n"
         )
         handle.write(
-            f"# Max relative directional spread: {float(max_rel_directional_spread):.16e} "
+            f"# Max relative directional spread in S3: {float(max_rel_directional_spread):.16e} "
             f"at r = {float(r_at_max_rel_directional_spread):.16e}\n"
         )
         handle.write(
-            f"# Columns: {'r':>23s}, {'S3_x':>23s}, {'S3_y':>23s}, "
+            f"# Columns: {'r':>23s}, {'S2_L':>23s}, {'S3_x':>23s}, {'S3_y':>23s}, "
             f"{'S3_z':>23s}, {'S3_avg':>23s}\n"
+        )
+        handle.write("[main]\n")
+        for row in summary:
+            handle.write(", ".join(f"{value:>23.16e}" for value in row) + "\n")
+        if shell_r_values is not None and s3_shell is not None and shell_counts is not None:
+            shell_summary = np.column_stack(
+                (
+                    np.asarray(shell_r_values, dtype=np.float64),
+                    np.asarray(s3_shell, dtype=np.float64),
+                    np.asarray(shell_counts, dtype=np.float64),
+                )
+            )
+            handle.write("[shell]\n")
+            handle.write("# Shell average uses shortest-periodic lattice vectors binned onto r = m dx shells.\n")
+            handle.write(
+                f"# Columns: {'r':>23s}, {'S3_shell':>23s}, {'shell_count':>23s}\n"
+            )
+            for row in shell_summary:
+                handle.write(", ".join(f"{value:>23.16e}" for value in row) + "\n")
+
+    return output_path
+
+
+def save_shell_averaged_third_order_structure_function(
+    r_values,
+    s3_shell,
+    shell_counts,
+    filename,
+    step_number,
+    time_value,
+    domain_length,
+):
+    """Save radially binned lattice-shell third-order structure-function data beside the spectra."""
+    stem = _spectra_output_stem(filename)
+    output_path = f"{stem}_structure_function_shell_third_order.txt"
+
+    summary = np.column_stack(
+        (
+            np.asarray(r_values, dtype=np.float64),
+            np.asarray(s3_shell, dtype=np.float64),
+            np.asarray(shell_counts, dtype=np.float64),
+        )
+    )
+
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(f"# Step: {step_number}, Time: {float(time_value):.16e}\n")
+        handle.write(f"# Domain length used in physical shifts: {float(domain_length):.16e}\n")
+        handle.write("# Shell average uses shortest-periodic lattice vectors binned onto r = m dx shells.\n")
+        handle.write(
+            f"# Columns: {'r':>23s}, {'S3_shell':>23s}, {'shell_count':>23s}\n"
         )
         for row in summary:
             handle.write(", ".join(f"{value:>23.16e}" for value in row) + "\n")

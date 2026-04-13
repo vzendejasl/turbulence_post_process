@@ -3,7 +3,7 @@
 
 Examples:
   python tools/plot_structure_function.py -q2 path/to/foo_spectra_structure_function.txt
-  python tools/plot_structure_function.py -q3 path/to/foo_spectra_structure_function_third_order.txt
+  python tools/plot_structure_function.py -q3 path/to/foo_spectra_structure_function.txt
   python tools/plot_structure_function.py -q2 path/to/foo_spectra_structure_function.txt --output foo_structure_function.pdf
 """
 
@@ -18,7 +18,7 @@ from matplotlib.ticker import LogLocator
 
 
 def _default_output_path(input_path: Path) -> Path:
-    if input_path.stem.endswith("_structure_function_third_order"):
+    if input_path.stem.endswith("_structure_function_shell_third_order"):
         return input_path.with_name(f"{input_path.stem}_plot.pdf")
     if input_path.stem.endswith("_structure_function"):
         return input_path.with_name(f"{input_path.stem}_plot.pdf")
@@ -49,7 +49,7 @@ def _reference_plateau_q2(r_values: np.ndarray, compensated_values: np.ndarray) 
 
 
 def _reference_plateau_q3(r_values: np.ndarray, compensated_values: np.ndarray) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
-    positive_mask = (r_values > 0.0) & np.isfinite(compensated_values)
+    positive_mask = (r_values > 0.0) & np.isfinite(compensated_values) & (compensated_values > 0.0)
     if not np.any(positive_mask):
         return None, None
 
@@ -60,16 +60,52 @@ def _reference_plateau_q3(r_values: np.ndarray, compensated_values: np.ndarray) 
     return r_positive, np.full_like(r_positive, anchor_value, dtype=np.float64)
 
 
+def _positive_loglog_curve(r_values: np.ndarray, values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    mask = (np.asarray(r_values, dtype=np.float64) > 0.0) & np.isfinite(values) & (np.asarray(values, dtype=np.float64) > 0.0)
+    return np.asarray(r_values[mask], dtype=np.float64), np.asarray(values[mask], dtype=np.float64)
+
+
 def _infer_order_from_path(input_path: Path) -> str:
-    if input_path.stem.endswith("_structure_function_third_order"):
-        return "q3"
     return "q2"
 
 
+def _read_structure_function_sections(input_path: Path) -> tuple[np.ndarray, np.ndarray | None]:
+    main_rows: list[list[float]] = []
+    shell_rows: list[list[float]] = []
+    current_section = "main"
+
+    with open(input_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped == "[main]":
+                current_section = "main"
+                continue
+            if stripped == "[shell]":
+                current_section = "shell"
+                continue
+
+            row = [float(value.strip()) for value in stripped.split(",")]
+            if current_section == "shell":
+                shell_rows.append(row)
+            else:
+                main_rows.append(row)
+
+    if not main_rows:
+        raise SystemExit(f"No main structure-function rows found in {input_path}")
+
+    main = np.asarray(main_rows, dtype=np.float64)
+    shell = np.asarray(shell_rows, dtype=np.float64) if shell_rows else None
+    if main.ndim == 1:
+        main = main.reshape(1, -1)
+    if shell is not None and shell.ndim == 1:
+        shell = shell.reshape(1, -1)
+    return main, shell
+
+
 def _plot_q2(input_path: Path, output_path: Path) -> None:
-    data = np.loadtxt(input_path, delimiter=",", comments="#")
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
+    data, _ = _read_structure_function_sections(input_path)
     if data.shape[1] < 2:
         raise SystemExit(f"Expected at least two columns in {input_path}")
 
@@ -120,41 +156,96 @@ def _plot_q2(input_path: Path, output_path: Path) -> None:
     print("Reference guide: horizontal line anchored to the mid-range compensated sample")
 
 
-def _plot_q3(input_path: Path, output_path: Path) -> None:
-    data = np.loadtxt(input_path, delimiter=",", comments="#")
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-    if data.shape[1] < 5:
-        raise SystemExit(f"Expected five columns in {input_path}")
+def _plot_q3(input_path: Path, output_path: Path, with_shell: bool) -> None:
+    data, shell_section = _read_structure_function_sections(input_path)
+    if data.shape[1] >= 6:
+        r_values = np.asarray(data[:, 0], dtype=np.float64)
+        s3_x = np.asarray(data[:, 2], dtype=np.float64)
+        s3_y = np.asarray(data[:, 3], dtype=np.float64)
+        s3_z = np.asarray(data[:, 4], dtype=np.float64)
+        s3_avg = np.asarray(data[:, 5], dtype=np.float64)
+        if with_shell and shell_section is not None and shell_section.shape[1] >= 3:
+            s3_shell = np.asarray(shell_section[:, 1], dtype=np.float64)
+            r_shell = np.asarray(shell_section[:, 0], dtype=np.float64)
+            has_shell = True
+        else:
+            s3_shell = None
+            r_shell = None
+            has_shell = False
+    elif data.shape[1] >= 5:
+        r_values = np.asarray(data[:, 0], dtype=np.float64)
+        s3_x = np.asarray(data[:, 1], dtype=np.float64)
+        s3_y = np.asarray(data[:, 2], dtype=np.float64)
+        s3_z = np.asarray(data[:, 3], dtype=np.float64)
+        s3_avg = np.asarray(data[:, 4], dtype=np.float64)
+        s3_shell = None
+        has_shell = False
+    else:
+        raise SystemExit(f"Expected either 5 columns (legacy q3) or 6 columns (combined file) in {input_path}")
 
-    r_values = np.asarray(data[:, 0], dtype=np.float64)
-    s3_x = np.asarray(data[:, 1], dtype=np.float64)
-    s3_y = np.asarray(data[:, 2], dtype=np.float64)
-    s3_z = np.asarray(data[:, 3], dtype=np.float64)
-    s3_avg = np.asarray(data[:, 4], dtype=np.float64)
     positive_r_mask = r_values > 0.0
     if not np.any(positive_r_mask):
         raise SystemExit("Need at least one positive r value to build the compensated plot.")
 
-    r_plot = r_values[positive_r_mask]
-    s3_x_comp = -s3_x[positive_r_mask] / r_plot
-    s3_y_comp = -s3_y[positive_r_mask] / r_plot
-    s3_z_comp = -s3_z[positive_r_mask] / r_plot
-    s3_avg_comp = -s3_avg[positive_r_mask] / r_plot
+    if s3_avg is not None:
+        r_plot = r_values[positive_r_mask]
+        s3_x_comp = np.abs(-s3_x[positive_r_mask] / r_plot)
+        s3_y_comp = np.abs(-s3_y[positive_r_mask] / r_plot)
+        s3_z_comp = np.abs(-s3_z[positive_r_mask] / r_plot)
+        s3_avg_comp = np.abs(-s3_avg[positive_r_mask] / r_plot)
+    else:
+        r_plot = r_values[positive_r_mask]
+        s3_x_comp = s3_y_comp = s3_z_comp = s3_avg_comp = None
+
+    if has_shell and s3_shell is not None:
+        if 'r_shell' not in locals() or r_shell is None:
+            shell_mask = positive_r_mask & np.isfinite(s3_shell)
+            r_shell = r_values[shell_mask]
+            s3_shell_comp = np.abs(-s3_shell[shell_mask] / r_shell)
+        else:
+            shell_mask = (r_shell > 0.0) & np.isfinite(s3_shell)
+            r_shell = r_shell[shell_mask]
+            s3_shell_comp = np.abs(-s3_shell[shell_mask] / r_shell)
+    else:
+        r_shell = None
+        s3_shell_comp = None
 
     with plt.rc_context(_plot_style()):
         fig, ax = plt.subplots(figsize=(7.0, 5.5))
-        ax.plot(r_plot, s3_x_comp, linewidth=1.5, label=r"$-S_{3,L}^{(x)}(r) / r$")
-        ax.plot(r_plot, s3_y_comp, linewidth=1.5, label=r"$-S_{3,L}^{(y)}(r) / r$")
-        ax.plot(r_plot, s3_z_comp, linewidth=1.5, label=r"$-S_{3,L}^{(z)}(r) / r$")
-        ax.plot(r_plot, s3_avg_comp, linewidth=2.5, color="black", label=r"$-S_{3,L}^{\mathrm{avg}}(r) / r$")
-        r_ref, plateau = _reference_plateau_q3(r_plot, s3_avg_comp)
+        if s3_avg_comp is not None:
+            rx, vx = _positive_loglog_curve(r_plot, s3_x_comp)
+            ry, vy = _positive_loglog_curve(r_plot, s3_y_comp)
+            rz, vz = _positive_loglog_curve(r_plot, s3_z_comp)
+            ravg, vavg = _positive_loglog_curve(r_plot, s3_avg_comp)
+            if len(rx) > 0:
+                ax.loglog(rx, vx, linewidth=1.5, label=r"$\left|-S_{3,L}^{(x)}(r) / r\right|$")
+            if len(ry) > 0:
+                ax.loglog(ry, vy, linewidth=1.5, label=r"$\left|-S_{3,L}^{(y)}(r) / r\right|$")
+            if len(rz) > 0:
+                ax.loglog(rz, vz, linewidth=1.5, label=r"$\left|-S_{3,L}^{(z)}(r) / r\right|$")
+            if len(ravg) > 0:
+                ax.loglog(ravg, vavg, linewidth=2.5, color="black", label=r"$\left|-S_{3,L}^{\mathrm{avg}}(r) / r\right|$")
+        if r_shell is not None and s3_shell_comp is not None and len(r_shell) > 0:
+            rshell, vshell = _positive_loglog_curve(r_shell, s3_shell_comp)
+            if len(rshell) > 0:
+                ax.loglog(
+                    rshell,
+                    vshell,
+                    linewidth=2.0,
+                    linestyle="-.",
+                    color="tab:red",
+                    label=r"$\left|-S_{3,L}^{\mathrm{shell}}(r) / r\right|$",
+                )
+        reference_values = s3_avg_comp if s3_avg_comp is not None else s3_shell_comp
+        reference_r = r_plot if s3_avg_comp is not None else r_shell
+        r_ref, plateau = _reference_plateau_q3(reference_r, reference_values)
         if r_ref is not None and plateau is not None:
-            ax.plot(r_ref, plateau, linestyle="--", linewidth=1.5, color="0.3", label="Reference plateau")
-        ax.axhline(0.0, color="0.5", linewidth=1.0, linestyle="--")
+            ax.loglog(r_ref, plateau, linestyle="--", linewidth=1.5, color="0.3", label="Reference plateau")
         ax.set_xlabel(r"$r$")
-        ax.set_ylabel(r"$-S_{3,L}(r) / r$")
-        ax.set_title("Compensated Third-Order Longitudinal Structure Function")
+        ax.set_ylabel(r"$\left|-S_{3,L}(r) / r\right|$")
+        ax.set_title("Compensated Third-Order Longitudinal Structure Function Magnitude")
+        ax.yaxis.set_major_locator(LogLocator(base=10.0, numticks=12))
+        ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10) * 0.1, numticks=100))
         ax.grid(True, which="both", alpha=0.3)
         ax.legend()
         fig.tight_layout()
@@ -163,9 +254,13 @@ def _plot_q3(input_path: Path, output_path: Path) -> None:
 
     print(f"Saved structure-function plot: {output_path}")
     print("Order: q3")
-    print("Plot scale: linear-linear")
-    print("Plotted quantity: -S_3(r) / r")
-    print("Reference guide: horizontal line anchored to the mid-range compensated average")
+    print("Plot scale: log-log")
+    print("Plotted quantity: | -S_3(r) / r |")
+    if with_shell:
+        print("Curves: axis-aligned average/direct curves, plus shell curve when a shell section is available")
+    else:
+        print("Curves: axis-aligned average/direct curves only")
+    print("Reference guide: horizontal plateau anchored to the mid-range compensated magnitude")
 
 
 def main() -> None:
@@ -177,9 +272,10 @@ def main() -> None:
     order_group.add_argument("-q3", action="store_true", help="Plot the third-order structure function file")
     parser.add_argument(
         "structure_function_path",
-        help="Path to a *_spectra_structure_function.txt or *_structure_function_third_order.txt file",
+        help="Path to a combined *_spectra_structure_function.txt file or a legacy third-order file",
     )
     parser.add_argument("--output", default=None, help="Optional output PDF path")
+    parser.add_argument("--no-shell", action="store_true", help="Hide the shell-averaged q3 curve")
     args = parser.parse_args()
 
     input_path = Path(args.structure_function_path).expanduser().resolve()
@@ -192,7 +288,7 @@ def main() -> None:
     if order == "q2":
         _plot_q2(input_path, output_path)
     else:
-        _plot_q3(input_path, output_path)
+        _plot_q3(input_path, output_path, with_shell=not args.no_shell)
 
 
 if __name__ == "__main__":

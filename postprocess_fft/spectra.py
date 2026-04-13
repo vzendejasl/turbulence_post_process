@@ -268,6 +268,28 @@ def _compute_axis_third_order_fft(component, axis, plan, local_shape, shape, box
     return 3.0 * (corr_sq_u - corr_u_sq)
 
 
+def _local_shortest_periodic_displacements(shape, box):
+    """Return shortest periodic displacement components for one local correlation volume."""
+    local_shape = (
+        int(box.high[0] - box.low[0] + 1),
+        int(box.high[1] - box.low[1] + 1),
+        int(box.high[2] - box.low[2] + 1),
+    )
+    axes = []
+    for axis in range(3):
+        start = int(box.low[axis])
+        stop = int(box.high[axis]) + 1
+        coords = np.arange(start, stop, dtype=np.int64)
+        half = int(shape[axis] // 2)
+        coords = np.where(coords <= half, coords, coords - int(shape[axis]))
+        axes.append(coords)
+
+    mx = np.broadcast_to(axes[0][:, np.newaxis, np.newaxis], local_shape)
+    my = np.broadcast_to(axes[1][np.newaxis, :, np.newaxis], local_shape)
+    mz = np.broadcast_to(axes[2][np.newaxis, np.newaxis, :], local_shape)
+    return mx, my, mz
+
+
 def compute_third_order_structure_function_fft(plan, local_shape, box, vx, vy, vz, shape, dx, dy, dz, comm):
     """Compute axis-aligned third-order longitudinal structure functions via HeFFTe FFT correlations."""
     _third_order_validate_grid(shape, dx, dy, dz)
@@ -280,6 +302,95 @@ def compute_third_order_structure_function_fft(plan, local_shape, box, vx, vy, v
     s3_z = _compute_axis_third_order_fft(vz, 2, plan, local_shape, shape, box, comm)
     s3_avg = (s3_x + s3_y + s3_z) / 3.0
     return r_values, s3_x, s3_y, s3_z, s3_avg
+
+
+def compute_shell_averaged_third_order_structure_function_fft(
+    plan,
+    local_shape,
+    box,
+    vx,
+    vy,
+    vz,
+    shape,
+    dx,
+    dy,
+    dz,
+    comm,
+):
+    """Compute a binned lattice-shell average of the longitudinal third-order structure function."""
+    _third_order_validate_grid(shape, dx, dy, dz)
+
+    max_shift = int(shape[0] // 2)
+    mx, my, mz = _local_shortest_periodic_displacements(shape, box)
+    radius_sq = mx * mx + my * my + mz * mz
+    radius = np.sqrt(radius_sq.astype(np.float64))
+
+    canonical_mask = radius_sq > 0
+    canonical_mask &= (mx > 0) | ((mx == 0) & (my > 0)) | ((mx == 0) & (my == 0) & (mz > 0))
+
+    ex = np.zeros(local_shape, dtype=np.float64)
+    ey = np.zeros(local_shape, dtype=np.float64)
+    ez = np.zeros(local_shape, dtype=np.float64)
+    ex[canonical_mask] = mx[canonical_mask] / radius[canonical_mask]
+    ey[canonical_mask] = my[canonical_mask] / radius[canonical_mask]
+    ez[canonical_mask] = mz[canonical_mask] / radius[canonical_mask]
+    direction_cosines = (ex, ey, ez)
+
+    components = (
+        np.asarray(vx, dtype=np.float64),
+        np.asarray(vy, dtype=np.float64),
+        np.asarray(vz, dtype=np.float64),
+    )
+    component_ffts = tuple(
+        forward_field(plan, component).reshape(local_shape, order="C")
+        for component in components
+    )
+    pair_indices = ((0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2))
+    quadratic_ffts = {
+        (i, j): forward_field(plan, components[i] * components[j]).reshape(local_shape, order="C")
+        for i, j in pair_indices
+    }
+    global_points = float(np.prod(shape))
+
+    s3_local = np.zeros(local_shape, dtype=np.float64)
+    for i, j in pair_indices:
+        multiplicity = 1.0 if i == j else 2.0
+        coeff_ij = multiplicity * direction_cosines[i] * direction_cosines[j]
+        quad_fft = quadratic_ffts[(i, j)]
+        for k in range(3):
+            corr_local = backward_field(plan, np.conj(quad_fft) * component_ffts[k], local_shape) / global_points
+            s3_local += 3.0 * coeff_ij * direction_cosines[k] * corr_local
+
+    for j, k in pair_indices:
+        multiplicity = 1.0 if j == k else 2.0
+        coeff_jk = multiplicity * direction_cosines[j] * direction_cosines[k]
+        quad_fft = quadratic_ffts[(j, k)]
+        for i in range(3):
+            corr_local = backward_field(plan, np.conj(component_ffts[i]) * quad_fft, local_shape) / global_points
+            s3_local -= 3.0 * direction_cosines[i] * coeff_jk * corr_local
+
+    local_shell_index = np.rint(radius[canonical_mask]).astype(np.int64, copy=False).ravel(order="C")
+    local_s3_values = s3_local[canonical_mask].astype(np.float64, copy=False).ravel(order="C")
+    valid_shell_mask = (local_shell_index > 0) & (local_shell_index <= max_shift)
+    local_shell_index = local_shell_index[valid_shell_mask]
+    local_s3_values = local_s3_values[valid_shell_mask]
+    local_shell_sums = np.bincount(local_shell_index, weights=local_s3_values, minlength=max_shift + 1)
+    local_shell_counts = np.bincount(local_shell_index, minlength=max_shift + 1).astype(np.float64)
+
+    global_shell_sums = np.zeros_like(local_shell_sums) if comm.Get_rank() == 0 else None
+    global_shell_counts = np.zeros_like(local_shell_counts) if comm.Get_rank() == 0 else None
+    comm.Reduce(local_shell_sums, global_shell_sums, op=MPI.SUM, root=0)
+    comm.Reduce(local_shell_counts, global_shell_counts, op=MPI.SUM, root=0)
+
+    if comm.Get_rank() != 0:
+        return None, None, None
+
+    valid_shell_index = np.nonzero(global_shell_counts > 0.0)[0]
+    valid_shell_index = valid_shell_index[valid_shell_index > 0]
+    r_values = float(dx) * valid_shell_index.astype(np.float64)
+    shell_average = global_shell_sums[valid_shell_index] / global_shell_counts[valid_shell_index]
+    shell_counts = global_shell_counts[valid_shell_index]
+    return r_values, shell_average, shell_counts
 
 
 def compute_qr_joint_pdf(

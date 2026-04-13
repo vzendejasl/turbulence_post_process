@@ -18,8 +18,7 @@ from .io import read_data_file_header
 from .io import read_structured_local_fields
 from .io import plot_qr_joint_pdf
 from .io import save_qr_joint_pdf
-from .io import save_third_order_structure_function
-from .io import save_structure_function
+from .io import save_structure_functions
 from .io import save_spectra
 from .io import structured_h5_metadata
 from .layout import box_shape
@@ -30,6 +29,7 @@ from .spectra import compute_energy_dissipation_enstrophy
 from .spectra import compute_energy_spectrum_from_modes
 from .spectra import compute_enstrophy_spectrum_from_modes
 from .spectra import compute_helicity_spectrum_from_modes
+from .spectra import compute_shell_averaged_third_order_structure_function_fft
 from .spectra import compute_third_order_structure_function_direct
 from .spectra import compute_third_order_structure_function_fft
 from .spectra import compute_longitudinal_structure_function_from_spectrum
@@ -44,7 +44,15 @@ from .transform import print_component_ranges
 from .transform import verify_decomposition
 
 
-def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_000, backend_name="heffte_fftw", visualize=False):
+def analyze_file_parallel(
+    filename,
+    comm,
+    header_lines=None,
+    chunk_size=5_000_000,
+    backend_name="heffte_fftw",
+    visualize=False,
+    compute_structure_functions=False,
+):
     rank = comm.Get_rank()
     root = rank == 0
     structured_h5 = False
@@ -141,8 +149,25 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
         print()
         print("Performing HeFFTe Helmholtz-Hodge decomposition...")
 
-    third_order_r_values, third_order_s3_x, third_order_s3_y, third_order_s3_z, third_order_s3_avg = (
-        compute_third_order_structure_function_fft(
+    third_order_r_values = third_order_s3_x = third_order_s3_y = third_order_s3_z = third_order_s3_avg = None
+    shell_r_values = shell_s3_values = shell_s3_counts = None
+    if compute_structure_functions:
+        third_order_r_values, third_order_s3_x, third_order_s3_y, third_order_s3_z, third_order_s3_avg = (
+            compute_third_order_structure_function_fft(
+                third_order_plan,
+                local_shape,
+                local_box,
+                local_vx,
+                local_vy,
+                local_vz,
+                shape,
+                dx,
+                dy,
+                dz,
+                comm,
+            )
+        )
+        shell_result = compute_shell_averaged_third_order_structure_function_fft(
             third_order_plan,
             local_shape,
             local_box,
@@ -155,8 +180,8 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
             dz,
             comm,
         )
-    )
-
+        if root:
+            shell_r_values, shell_s3_values, shell_s3_counts = shell_result
     vx_k = forward_field(plan, local_vx)
     vy_k = forward_field(plan, local_vy)
     vz_k = forward_field(plan, local_vz)
@@ -267,24 +292,11 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
         Enst = zero_near_zero(Enst)
         Hel = zero_near_zero(Hel)
         domain_length = float(dx) * float(shape[0])
-        max_r_index = shape[0] // 2
-        r_values = np.arange(max_r_index + 1, dtype=np.float64) * float(dx)
-        _, structure_function_longitudinal = compute_longitudinal_structure_function_from_spectrum(
-            k_centers,
-            E_total,
-            r_values,
-            domain_length,
-        )
-        structure_function_longitudinal = zero_near_zero(structure_function_longitudinal)
-        large_r_reference = (4.0 / 3.0) * float(np.sum(E_total, dtype=np.float64))
-        large_r_relative_difference = abs(
-            float(structure_function_longitudinal[-1]) - large_r_reference
-        ) / max(abs(large_r_reference), 1.0e-30)
-        print("Longitudinal structure function diagnostic:")
-        print(f"  Largest saved r: {float(r_values[-1]):.8f}")
-        print(f"  S_L(r_max): {float(structure_function_longitudinal[-1]):.8f}")
-        print(f"  4/3 * sum(E_total): {large_r_reference:.8f}")
-        print(f"  Relative difference at r_max: {large_r_relative_difference:.8e}")
+        r_values = None
+        structure_function_longitudinal = None
+        structure_function_path = None
+        large_r_reference = None
+        large_r_relative_difference = None
         E_total_comp = zero_near_zero(compensate_spectrum(k_centers, E_total, 5.0 / 3.0))
         E_comp_comp = zero_near_zero(compensate_spectrum(k_centers, E_comp, 5.0 / 3.0))
         E_rot_comp = zero_near_zero(compensate_spectrum(k_centers, E_rot, 5.0 / 3.0))
@@ -293,91 +305,98 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
         comp_ke = zero_near_zero_scalar(comp_ke)
         rot_ke = zero_near_zero_scalar(rot_ke)
         total_enstrophy = zero_near_zero_scalar(total_enstrophy)
-        third_order_s3_x = zero_near_zero(third_order_s3_x)
-        third_order_s3_y = zero_near_zero(third_order_s3_y)
-        third_order_s3_z = zero_near_zero(third_order_s3_z)
-        third_order_s3_avg = zero_near_zero(third_order_s3_avg)
-        directional_spread_abs = np.maximum.reduce(
-            (
-                np.abs(third_order_s3_x - third_order_s3_avg),
-                np.abs(third_order_s3_y - third_order_s3_avg),
-                np.abs(third_order_s3_z - third_order_s3_avg),
+        third_order_result = None
+        if compute_structure_functions:
+            max_r_index = shape[0] // 2
+            r_values = np.arange(max_r_index + 1, dtype=np.float64) * float(dx)
+            _, structure_function_longitudinal = compute_longitudinal_structure_function_from_spectrum(
+                k_centers,
+                E_total,
+                r_values,
+                domain_length,
             )
-        )
-        max_abs_directional_spread_index = int(np.argmax(directional_spread_abs))
-        max_abs_directional_spread = float(directional_spread_abs[max_abs_directional_spread_index])
-        r_at_max_abs_directional_spread = float(third_order_r_values[max_abs_directional_spread_index])
-        directional_spread_rel = np.full_like(directional_spread_abs, np.nan, dtype=np.float64)
-        valid_rel_mask = np.abs(third_order_s3_avg) > 1.0e-30
-        directional_spread_rel[valid_rel_mask] = (
-            directional_spread_abs[valid_rel_mask] / np.abs(third_order_s3_avg[valid_rel_mask])
-        )
-        if np.any(valid_rel_mask):
-            max_rel_directional_spread_index = int(np.nanargmax(directional_spread_rel))
-            max_rel_directional_spread = float(directional_spread_rel[max_rel_directional_spread_index])
-            r_at_max_rel_directional_spread = float(third_order_r_values[max_rel_directional_spread_index])
-        else:
-            max_rel_directional_spread = 0.0
-            r_at_max_rel_directional_spread = 0.0
-        third_order_direct_max_abs_diff = None
-        if comm.Get_size() == 1:
-            _, direct_s3_x, direct_s3_y, direct_s3_z, direct_s3_avg = compute_third_order_structure_function_direct(
-                local_vx,
-                local_vy,
-                local_vz,
-                dx,
-                dy,
-                dz,
-            )
-            third_order_direct_max_abs_diff = float(
-                max(
-                    np.max(np.abs(third_order_s3_x - direct_s3_x)),
-                    np.max(np.abs(third_order_s3_y - direct_s3_y)),
-                    np.max(np.abs(third_order_s3_z - direct_s3_z)),
-                    np.max(np.abs(third_order_s3_avg - direct_s3_avg)),
+            structure_function_longitudinal = zero_near_zero(structure_function_longitudinal)
+            large_r_reference = (4.0 / 3.0) * float(np.sum(E_total, dtype=np.float64))
+            large_r_relative_difference = abs(
+                float(structure_function_longitudinal[-1]) - large_r_reference
+            ) / max(abs(large_r_reference), 1.0e-30)
+            print("Longitudinal structure function diagnostic:")
+            print(f"  Largest saved r: {float(r_values[-1]):.8f}")
+            print(f"  S_L(r_max): {float(structure_function_longitudinal[-1]):.8f}")
+            print(f"  4/3 * sum(E_total): {large_r_reference:.8f}")
+            print(f"  Relative difference at r_max: {large_r_relative_difference:.8e}")
+            third_order_s3_x = zero_near_zero(third_order_s3_x)
+            third_order_s3_y = zero_near_zero(third_order_s3_y)
+            third_order_s3_z = zero_near_zero(third_order_s3_z)
+            third_order_s3_avg = zero_near_zero(third_order_s3_avg)
+            directional_spread_abs = np.maximum.reduce(
+                (
+                    np.abs(third_order_s3_x - third_order_s3_avg),
+                    np.abs(third_order_s3_y - third_order_s3_avg),
+                    np.abs(third_order_s3_z - third_order_s3_avg),
                 )
             )
-        print("Third-order structure function diagnostic:")
-        print(f"  Largest saved r: {float(third_order_r_values[-1]):.8f}")
-        print(f"  S3_avg(r_max): {float(third_order_s3_avg[-1]):.8f}")
-        print(
-            f"  Max absolute directional spread: {max_abs_directional_spread:.8e} "
-            f"at r = {r_at_max_abs_directional_spread:.8f}"
-        )
-        print(
-            f"  Max relative directional spread: {max_rel_directional_spread:.8e} "
-            f"at r = {r_at_max_rel_directional_spread:.8f}"
-        )
-        if third_order_direct_max_abs_diff is not None:
-            print(f"  Max |FFT - direct| on 1 rank: {third_order_direct_max_abs_diff:.8e}")
-        third_order_path = save_third_order_structure_function(
-            third_order_r_values,
-            third_order_s3_x,
-            third_order_s3_y,
-            third_order_s3_z,
-            third_order_s3_avg,
-            max_abs_directional_spread,
-            r_at_max_abs_directional_spread,
-            max_rel_directional_spread,
-            r_at_max_rel_directional_spread,
-            filename,
-            step_number,
-            time_value,
-            domain_length,
-        )
-        third_order_result = {
-            "r_values": third_order_r_values,
-            "S3_x": third_order_s3_x,
-            "S3_y": third_order_s3_y,
-            "S3_z": third_order_s3_z,
-            "S3_avg": third_order_s3_avg,
-            "path": third_order_path,
-            "direct_max_abs_diff": third_order_direct_max_abs_diff,
-            "max_abs_directional_spread": max_abs_directional_spread,
-            "r_at_max_abs_directional_spread": r_at_max_abs_directional_spread,
-            "max_rel_directional_spread": max_rel_directional_spread,
-            "r_at_max_rel_directional_spread": r_at_max_rel_directional_spread,
-        }
+            max_abs_directional_spread_index = int(np.argmax(directional_spread_abs))
+            max_abs_directional_spread = float(directional_spread_abs[max_abs_directional_spread_index])
+            r_at_max_abs_directional_spread = float(third_order_r_values[max_abs_directional_spread_index])
+            directional_spread_rel = np.full_like(directional_spread_abs, np.nan, dtype=np.float64)
+            valid_rel_mask = np.abs(third_order_s3_avg) > 1.0e-30
+            directional_spread_rel[valid_rel_mask] = (
+                directional_spread_abs[valid_rel_mask] / np.abs(third_order_s3_avg[valid_rel_mask])
+            )
+            if np.any(valid_rel_mask):
+                max_rel_directional_spread_index = int(np.nanargmax(directional_spread_rel))
+                max_rel_directional_spread = float(directional_spread_rel[max_rel_directional_spread_index])
+                r_at_max_rel_directional_spread = float(third_order_r_values[max_rel_directional_spread_index])
+            else:
+                max_rel_directional_spread = 0.0
+                r_at_max_rel_directional_spread = 0.0
+            third_order_direct_max_abs_diff = None
+            if comm.Get_size() == 1:
+                _, direct_s3_x, direct_s3_y, direct_s3_z, direct_s3_avg = compute_third_order_structure_function_direct(
+                    local_vx,
+                    local_vy,
+                    local_vz,
+                    dx,
+                    dy,
+                    dz,
+                )
+                third_order_direct_max_abs_diff = float(
+                    max(
+                        np.max(np.abs(third_order_s3_x - direct_s3_x)),
+                        np.max(np.abs(third_order_s3_y - direct_s3_y)),
+                        np.max(np.abs(third_order_s3_z - direct_s3_z)),
+                        np.max(np.abs(third_order_s3_avg - direct_s3_avg)),
+                    )
+                )
+            print("Third-order structure function diagnostic:")
+            print(f"  Largest saved r: {float(third_order_r_values[-1]):.8f}")
+            print(f"  S3_avg(r_max): {float(third_order_s3_avg[-1]):.8f}")
+            print(
+                f"  Max absolute directional spread: {max_abs_directional_spread:.8e} "
+                f"at r = {r_at_max_abs_directional_spread:.8f}"
+            )
+            print(
+                f"  Max relative directional spread: {max_rel_directional_spread:.8e} "
+                f"at r = {r_at_max_rel_directional_spread:.8f}"
+            )
+            shell_s3_values = zero_near_zero(shell_s3_values)
+            populated_shell_bins = int(np.count_nonzero(shell_s3_counts > 0.0))
+            print(f"  Shell-average populated bins: {populated_shell_bins:d}")
+            if third_order_direct_max_abs_diff is not None:
+                print(f"  Max |FFT - direct| on 1 rank: {third_order_direct_max_abs_diff:.8e}")
+            third_order_result = {
+                "r_values": third_order_r_values,
+                "S3_x": third_order_s3_x,
+                "S3_y": third_order_s3_y,
+                "S3_z": third_order_s3_z,
+                "S3_avg": third_order_s3_avg,
+                "direct_max_abs_diff": third_order_direct_max_abs_diff,
+                "max_abs_directional_spread": max_abs_directional_spread,
+                "r_at_max_abs_directional_spread": r_at_max_abs_directional_spread,
+                "max_rel_directional_spread": max_rel_directional_spread,
+                "r_at_max_rel_directional_spread": r_at_max_rel_directional_spread,
+            }
         save_spectra(
             k_centers,
             E_total,
@@ -400,16 +419,32 @@ def analyze_file_parallel(filename, comm, header_lines=None, chunk_size=5_000_00
             rot_ke,
             total_enstrophy,
         )
-        structure_function_path = save_structure_function(
-            r_values,
-            structure_function_longitudinal,
-            filename,
-            step_number,
-            time_value,
-            domain_length,
-            large_r_reference,
-            large_r_relative_difference,
-        )
+        if compute_structure_functions:
+            structure_function_path = save_structure_functions(
+                r_values,
+                structure_function_longitudinal,
+                third_order_s3_x,
+                third_order_s3_y,
+                third_order_s3_z,
+                third_order_s3_avg,
+                shell_r_values,
+                shell_s3_values,
+                shell_s3_counts,
+                filename,
+                step_number,
+                time_value,
+                domain_length,
+                large_r_reference,
+                large_r_relative_difference,
+                max_abs_directional_spread,
+                r_at_max_abs_directional_spread,
+                max_rel_directional_spread,
+                r_at_max_rel_directional_spread,
+            )
+            third_order_result["path"] = structure_function_path
+            third_order_result["shell_r_values"] = shell_r_values
+            third_order_result["S3_shell"] = shell_s3_values
+            third_order_result["shell_count"] = shell_s3_counts
         qr_h5_path = save_qr_joint_pdf(
             qr_joint_pdf,
             filename,
