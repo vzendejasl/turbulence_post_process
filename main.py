@@ -44,6 +44,11 @@ Examples:
     )
     parser.add_argument("--chunk-size", type=int, default=5_000_000, help="Chunk size for serial TXT fallback reads")
     parser.add_argument("--fft-plot", action="store_true", help="Plot FFT spectra on rank 0 after processing")
+    parser.add_argument(
+        "--structure-functions",
+        action="store_true",
+        help="Compute 2nd and 3rd order structure functions during the FFT step.",
+    )
     parser.add_argument("--slice-axis", default="z", choices=["x", "y", "z"], help="Default slice normal axis")
     parser.add_argument(
         "--slice",
@@ -166,6 +171,7 @@ Examples:
                         chunk_size=args.chunk_size,
                         backend_name=args.backend,
                         visualize=False,
+                        compute_structure_functions=args.structure_functions,
                     )
                     if rank == 0:
                         fft_results.append(fft_result)
