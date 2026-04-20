@@ -509,6 +509,7 @@ def save_qr_joint_pdf(
         hf.attrs["max_grad_fro_sq"] = float(qr_result["max_grad_fro_sq"])
         hf.attrs["filter_fraction"] = float(qr_result["filter_fraction"])
         hf.attrs["filter_threshold"] = float(qr_result["filter_threshold"])
+        hf.attrs["bins"] = int(qr_result["bins"])
         hf.attrs["q_min"] = float(qr_result["q_min"])
         hf.attrs["q_max"] = float(qr_result["q_max"])
         hf.attrs["r_min"] = float(qr_result["r_min"])

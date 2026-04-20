@@ -180,15 +180,19 @@ def write_slice_plane_serial(filepath, field_label, slice_tag, plane):
         hf["slices"][field_label][slice_tag]["values"][:] = np.asarray(plane, dtype=np.float64)
 
 
-def write_slice_limits_serial(filepath, field_label, slice_tag, global_min, global_max):
-    """Persist global 3D colorbar limits for one saved slice and its parent field."""
+def write_slice_stats_serial(filepath, field_label, slice_tag, global_min, global_max, global_rms):
+    """Persist global 3D normalization stats for one saved slice and its parent field."""
     with h5py.File(filepath, "r+") as hf:
         field_group = hf["slices"][field_label]
         slice_group = field_group[slice_tag]
         field_group.attrs["global_min"] = float(global_min)
         field_group.attrs["global_max"] = float(global_max)
+        field_group.attrs["global_rms"] = float(global_rms)
+        field_group.attrs["value_normalization"] = "global_rms"
         slice_group.attrs["global_min"] = float(global_min)
         slice_group.attrs["global_max"] = float(global_max)
+        slice_group.attrs["global_rms"] = float(global_rms)
+        slice_group.attrs["value_normalization"] = "global_rms"
 
 
 def list_available_slices(filepath):

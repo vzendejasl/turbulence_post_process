@@ -45,6 +45,12 @@ Examples:
     parser.add_argument("--chunk-size", type=int, default=5_000_000, help="Chunk size for serial TXT fallback reads")
     parser.add_argument("--fft-plot", action="store_true", help="Plot FFT spectra on rank 0 after processing")
     parser.add_argument(
+        "--qr-bins",
+        type=int,
+        default=256,
+        help="Number of linear bins per axis for the Q-R joint PDF. Default is 256.",
+    )
+    parser.add_argument(
         "--structure-functions",
         action="store_true",
         help="Compute 2nd and 3rd order structure functions during the FFT step.",
@@ -186,6 +192,7 @@ Examples:
                         visualize=False,
                         compute_structure_functions=args.structure_functions,
                         structure_function_full_domain=args.structure_function_full_box,
+                        qr_joint_pdf_bins=args.qr_bins,
                     )
                     if rank == 0:
                         fft_results.append(fft_result)

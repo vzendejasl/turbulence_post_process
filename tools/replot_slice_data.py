@@ -328,6 +328,8 @@ def _apply_normalization(saved, normalize, print_stats=False):
         else:
             print(f"Stored global 3D colorbar min: {stored_limits_raw[0]:.6g}")
             print(f"Stored global 3D colorbar max: {stored_limits_raw[1]:.6g}")
+        if "global_rms" in attrs:
+            print(f"Stored global 3D RMS normalization: {float(attrs['global_rms']):.6g}")
 
     if mode == "none":
         attrs["normalization"] = "none"
@@ -1339,6 +1341,8 @@ def print_saved_slice_metadata(slice_file, field_name, slice_tag):
     if "global_min" in attrs and "global_max" in attrs:
         print(f"Stored global 3D colorbar min: {float(attrs['global_min']):.6g}")
         print(f"Stored global 3D colorbar max: {float(attrs['global_max']):.6g}")
+    if "global_rms" in attrs:
+        print(f"Stored global 3D RMS normalization: {float(attrs['global_rms']):.6g}")
     print(f"Values shape: {saved['values'].shape}")
 
 

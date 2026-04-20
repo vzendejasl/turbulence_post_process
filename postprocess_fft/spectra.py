@@ -466,6 +466,10 @@ def compute_qr_joint_pdf(
     bins=256,
 ):
     """Compute a distributed joint PDF of Frobenius-normalized Q and R invariants."""
+    bins = int(bins)
+    if bins < 1:
+        raise ValueError("Q-R joint PDF bin count must be at least 1.")
+
     # Use the local Frobenius norm of the velocity-gradient tensor to normalize
     # the invariants at each point, matching the normalized-VGT convention.
     grad_fro_sq = (
@@ -508,9 +512,9 @@ def compute_qr_joint_pdf(
     if global_retained_samples == 0:
         if comm.Get_rank() != 0:
             return None
-        zero_edges = np.linspace(-1.0, 1.0, int(bins) + 1, dtype=np.float64)
+        zero_edges = np.linspace(-1.0, 1.0, bins + 1, dtype=np.float64)
         zero_centers = 0.5 * (zero_edges[:-1] + zero_edges[1:])
-        zero_hist = np.zeros((int(bins), int(bins)), dtype=np.float64)
+        zero_hist = np.zeros((bins, bins), dtype=np.float64)
         return {
             "q_edges": zero_edges,
             "r_edges": zero_edges,
@@ -525,6 +529,7 @@ def compute_qr_joint_pdf(
             "max_grad_fro_sq": float(global_max_grad_fro_sq),
             "filter_fraction": float(filter_fraction),
             "filter_threshold": float(filter_threshold),
+            "bins": int(bins),
             "q_min": -1.0,
             "q_max": 1.0,
             "r_min": -1.0,
@@ -550,8 +555,8 @@ def compute_qr_joint_pdf(
         r_global_min -= delta
         r_global_max += delta
 
-    q_edges = np.linspace(q_global_min, q_global_max, int(bins) + 1, dtype=np.float64)
-    r_edges = np.linspace(r_global_min, r_global_max, int(bins) + 1, dtype=np.float64)
+    q_edges = np.linspace(q_global_min, q_global_max, bins + 1, dtype=np.float64)
+    r_edges = np.linspace(r_global_min, r_global_max, bins + 1, dtype=np.float64)
 
     local_hist, _, _ = np.histogram2d(
         q_norm_local.ravel(order="C"),
@@ -584,6 +589,7 @@ def compute_qr_joint_pdf(
         "max_grad_fro_sq": float(global_max_grad_fro_sq),
         "filter_fraction": float(filter_fraction),
         "filter_threshold": float(filter_threshold),
+        "bins": int(bins),
         "q_min": float(q_global_min),
         "q_max": float(q_global_max),
         "r_min": float(r_global_min),

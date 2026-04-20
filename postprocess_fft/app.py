@@ -55,6 +55,7 @@ def analyze_file_parallel(
     visualize=False,
     compute_structure_functions=False,
     structure_function_full_domain=True,
+    qr_joint_pdf_bins=256,
 ):
     rank = comm.Get_rank()
     root = rank == 0
@@ -302,6 +303,7 @@ def analyze_file_parallel(
         duz_dy,
         duz_dz,
         comm,
+        bins=qr_joint_pdf_bins,
     )
 
     result = None
@@ -528,6 +530,7 @@ def analyze_file_parallel(
             "third_order_structure_function": third_order_result,
             "qr_joint_pdf_h5": qr_h5_path,
             "qr_joint_pdf_pdf": qr_pdf_path,
+            "qr_joint_pdf_bins": int(qr_joint_pdf_bins),
         }
 
     return result
@@ -562,6 +565,12 @@ Examples:
         type=int,
         default=5_000_000,
         help="Chunk size used when rank 0 reads the input file.",
+    )
+    parser.add_argument(
+        "--qr-bins",
+        type=int,
+        default=256,
+        help="Number of linear bins per axis for the Q-R joint PDF. Default is 256.",
     )
     parser.add_argument(
         "--structure-functions",
@@ -601,6 +610,7 @@ Examples:
             visualize=args.visualize,
             compute_structure_functions=args.structure_functions,
             structure_function_full_domain=args.structure_function_full_box,
+            qr_joint_pdf_bins=args.qr_bins,
         )
         if rank == 0:
             results.append(result)

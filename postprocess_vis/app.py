@@ -31,7 +31,7 @@ from postprocess_vis.field_specs import default_requested_field_names
 from postprocess_vis.slice_data import default_slice_data_output
 from postprocess_vis.slice_data import initialize_slice_data_file
 from postprocess_vis.slice_data import storage_slice_tag
-from postprocess_vis.slice_data import write_slice_limits_serial
+from postprocess_vis.slice_data import write_slice_stats_serial
 from postprocess_vis.slice_data import write_slice_plane_parallel
 from postprocess_vis.slice_data import write_slice_plane_serial
 
@@ -403,8 +403,20 @@ def compute_local_derived_fields(
     return derived_fields
 
 
-def compute_global_field_limits(filepath, dataset_name, field_family, meta, comm, derived_cache=None):
-    """Return the full 3D min/max for fields that should use global color scaling."""
+def global_rms(values, comm):
+    """Return the global RMS of a distributed field, assuming zero mean."""
+    local_values = np.asarray(values, dtype=np.float64)
+    local_sum_sq = float(np.sum(local_values**2, dtype=np.float64))
+    local_count = int(local_values.size)
+    global_sum_sq = comm.allreduce(local_sum_sq, op=MPI.SUM)
+    global_count = comm.allreduce(local_count, op=MPI.SUM)
+    if global_count <= 0:
+        return 0.0
+    return float(np.sqrt(global_sum_sq / float(global_count)))
+
+
+def compute_global_field_stats(filepath, dataset_name, field_family, meta, comm, derived_cache=None):
+    """Return the full 3D min/max and RMS for one field."""
     shape = meta["shape"]
     proc_grid = choose_proc_grid(shape, comm.Get_size())
     boxes = build_boxes(shape, proc_grid)
@@ -417,13 +429,15 @@ def compute_global_field_limits(filepath, dataset_name, field_family, meta, comm
         if derived_cache is None or dataset_name not in derived_cache:
             raise ValueError(f"Derived cache is missing required field '{dataset_name}'.")
         local_values = np.asarray(derived_cache[dataset_name], dtype=np.float64)
-    elif field_family == "scalar":
-        local_values = read_structured_local_dataset(filepath, dataset_name, local_box, comm)
     else:
-        return None
+        local_values = read_structured_local_dataset(filepath, dataset_name, local_box, comm)
 
     global_min, global_max = global_range(local_values, comm)
-    return float(global_min), float(global_max)
+    return {
+        "global_min": float(global_min),
+        "global_max": float(global_max),
+        "global_rms": global_rms(local_values, comm),
+    }
 
 
 def output_stem(source_path, field_label):
@@ -470,6 +484,7 @@ def append_slice_metadata_log(
     plane_max,
     colorbar_min,
     colorbar_max,
+    global_rms,
     output_path,
 ):
     """Append one rendered-slice metadata block to the shared slice-plots log."""
@@ -486,6 +501,7 @@ def append_slice_metadata_log(
         f"Slice 2D max: {float(plane_max):.16e}",
         f"Global 3D colorbar min: {float(colorbar_min):.16e}",
         f"Global 3D colorbar max: {float(colorbar_max):.16e}",
+        f"Global 3D RMS normalization: {float(global_rms):.16e}",
         f"Output: {os.path.abspath(output_path)}",
         "",
     ]
@@ -575,8 +591,8 @@ def render_plane_image(
     plane = np.round(plane, decimals=10)
     plane_min = float(np.min(plane))
     plane_max = float(np.max(plane))
-    # Slice images now default to the full 3D field limits so colorbars stay
-    # comparable across different slice locations for the same variable.
+    # Slice images default to the normalized full 3D field limits so colorbars
+    # stay comparable across different slice locations for the same variable.
     if colorbar_limits is None:
         zmin = plane_min
         zmax = plane_max
@@ -816,7 +832,7 @@ def run_visualization(
     use_legacy_parallel_slice_data_write = False
     for dataset_name, field_label, latex_label, field_family in field_specs:
         log_rank0(rank, f"Field: {field_label}")
-        global_limits = compute_global_field_limits(
+        global_stats = compute_global_field_stats(
             prepared_path,
             dataset_name,
             field_family,
@@ -825,18 +841,21 @@ def run_visualization(
             derived_cache=derived_cache,
         )
         if rank == 0:
-            if global_limits is None:
-                print(
-                    f"  Global 3D colorbar limits are not tracked for {field_label}; "
-                    "falling back to gathered 2D slice limits.",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"  Global 3D colorbar limits for {field_label}: "
-                    f"min={global_limits[0]:.6g}, max={global_limits[1]:.6g}",
-                    flush=True,
-                )
+            print(
+                f"  Global 3D stats for {field_label}: "
+                f"min={global_stats['global_min']:.6g}, "
+                f"max={global_stats['global_max']:.6g}, "
+                f"rms={global_stats['global_rms']:.6g}",
+                flush=True,
+            )
+        normalization_rms = float(global_stats["global_rms"])
+        if normalization_rms <= 1.0e-30:
+            normalization_rms = 1.0
+            log_rank0(rank, f"  RMS for {field_label} is ~0; leaving values unscaled.")
+        normalized_limits = (
+            float(global_stats["global_min"]) / normalization_rms,
+            float(global_stats["global_max"]) / normalization_rms,
+        )
         for axis_name, plane_index, slice_tag in requests:
             slice_start = time.perf_counter()
             stored_slice_tag = storage_slice_tag(axis_name, slice_tag)
@@ -859,6 +878,11 @@ def run_visualization(
 
             gather_start = time.perf_counter()
             plane = gather_plane(axis_name, local_bounds, local_plane, meta["shape"], comm)
+            local_plane_normalized = None
+            if local_plane is not None:
+                local_plane_normalized = np.asarray(local_plane, dtype=np.float64) / normalization_rms
+            if rank == 0:
+                plane = np.asarray(plane, dtype=np.float64) / normalization_rms
             log_rank0(
                 rank,
                 f"  Gather finished for {field_label}/{stored_slice_tag} in "
@@ -875,17 +899,18 @@ def run_visualization(
                         stored_slice_tag,
                         axis_name,
                         local_bounds,
-                        local_plane,
+                        local_plane_normalized,
                         comm,
                     )
                     comm.Barrier()
-                    if rank == 0 and global_limits is not None:
-                        write_slice_limits_serial(
+                    if rank == 0:
+                        write_slice_stats_serial(
                             saved_slice_data_path,
                             field_label,
                             stored_slice_tag,
-                            global_limits[0],
-                            global_limits[1],
+                            normalized_limits[0],
+                            normalized_limits[1],
+                            normalization_rms,
                         )
                     comm.Barrier()
                 else:
@@ -893,14 +918,14 @@ def run_visualization(
                     # write the reusable slice-data file serially on rank 0.
                     if rank == 0:
                         write_slice_plane_serial(saved_slice_data_path, field_label, stored_slice_tag, plane)
-                        if global_limits is not None:
-                            write_slice_limits_serial(
-                                saved_slice_data_path,
-                                field_label,
-                                stored_slice_tag,
-                                global_limits[0],
-                                global_limits[1],
-                            )
+                        write_slice_stats_serial(
+                            saved_slice_data_path,
+                            field_label,
+                            stored_slice_tag,
+                            normalized_limits[0],
+                            normalized_limits[1],
+                            normalization_rms,
+                        )
                     comm.Barrier()
                 log_rank0(
                     rank,
@@ -939,7 +964,7 @@ def run_visualization(
                     plot,
                     save_dpi,
                     figure_size,
-                    colorbar_limits=global_limits,
+                    colorbar_limits=normalized_limits,
                 )
                 rendered_paths = rendered_info["saved_paths"]
                 for saved_path in rendered_paths:
@@ -956,6 +981,7 @@ def run_visualization(
                         rendered_info["plane_max"],
                         rendered_info["colorbar_min"],
                         rendered_info["colorbar_max"],
+                        normalization_rms,
                         saved_path,
                     )
                 print(
