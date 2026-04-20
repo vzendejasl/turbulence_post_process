@@ -5,6 +5,7 @@ Scripts covered:
   main.py
   tools/ComputeSpectra.py
   tools/convert_txt_to_hdf5.py
+  tools/plot_structure_function.py
   tools/visualize_velocity_yt.py
   tools/replot_slice_data.py
 
@@ -195,6 +196,17 @@ Main.py command patterns:
   FFT only:
     mpirun -n 4 python main.py your_velocity_data.h5 --skip-slice
 
+  FFT with structure functions sampled over the default full periodic box:
+    mpirun -n 4 python main.py your_velocity_data.h5 \
+      --skip-slice \
+      --structure-functions
+
+  FFT with structure functions sampled over the half box only:
+    mpirun -n 4 python main.py your_velocity_data.h5 \
+      --skip-slice \
+      --structure-functions \
+      --structure-function-half-box
+
   Slice rendering only:
     mpirun -n 4 python main.py your_velocity_data.h5 --skip-fft
 
@@ -240,6 +252,44 @@ What main.py now does:
      each scalar .txt input.
   5. Runs the FFT/spectra workflow on the resulting HDF5.
   6. Writes one or more slice PDFs after the FFT step.
+
+Structure-function plotting:
+
+  Compensated q2 on the default log-log axes:
+    python tools/plot_structure_function.py -q2 your_spectra_structure_function.txt
+
+  Compensated q3 on the default log-log axes:
+    python tools/plot_structure_function.py -q3 your_spectra_structure_function.txt
+
+  Compensated q2 on linear-linear axes:
+    python tools/plot_structure_function.py -q2 your_spectra_structure_function.txt --plot-linear
+
+  Compensated q3 on linear-linear axes:
+    python tools/plot_structure_function.py -q3 your_spectra_structure_function.txt --plot-linear
+
+  Uncompensated q2 on linear-linear axes:
+    python tools/plot_structure_function.py -q2 your_spectra_structure_function.txt \
+      --plot-linear \
+      --uncompensated
+
+  Uncompensated q3 on linear-linear axes:
+    python tools/plot_structure_function.py -q3 your_spectra_structure_function.txt \
+      --plot-linear \
+      --uncompensated
+
+  Hide the shell-averaged q3 curve:
+    python tools/plot_structure_function.py -q3 your_spectra_structure_function.txt --no-shell
+
+  Write to a specific PDF path:
+    python tools/plot_structure_function.py -q2 your_spectra_structure_function.txt \
+      --plot-linear \
+      --output q2_structure_function_linear.pdf
+
+Notes:
+  - Full-box is now the default for newly computed axis-aligned structure functions.
+  - If you want only the shortest periodic separations, add --structure-function-half-box during computation.
+  - The plotter reads whatever r range is already stored in the file; it does not change half-box data into full-box data.
+  - A full-box file can still be post-processed later to inspect only 0 <= r <= L/2 by keeping the first half of the saved rows.
 
 Files written by the integrated pipeline:
   - the structured .h5 is written next to the original .txt input

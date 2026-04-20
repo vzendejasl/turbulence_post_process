@@ -52,6 +52,7 @@ def analyze_file_parallel(
     backend_name="heffte_fftw",
     visualize=False,
     compute_structure_functions=False,
+    structure_function_full_domain=True,
 ):
     rank = comm.Get_rank()
     root = rank == 0
@@ -165,6 +166,7 @@ def analyze_file_parallel(
                 dy,
                 dz,
                 comm,
+                full_domain=structure_function_full_domain,
             )
         )
         shell_result = compute_shell_averaged_third_order_structure_function_fft(
@@ -307,7 +309,7 @@ def analyze_file_parallel(
         total_enstrophy = zero_near_zero_scalar(total_enstrophy)
         third_order_result = None
         if compute_structure_functions:
-            max_r_index = shape[0] // 2
+            max_r_index = shape[0] if structure_function_full_domain else shape[0] // 2
             r_values = np.arange(max_r_index + 1, dtype=np.float64) * float(dx)
             _, structure_function_longitudinal = compute_longitudinal_structure_function_from_spectrum(
                 k_centers,
@@ -317,14 +319,17 @@ def analyze_file_parallel(
             )
             structure_function_longitudinal = zero_near_zero(structure_function_longitudinal)
             large_r_reference = (4.0 / 3.0) * float(np.sum(E_total, dtype=np.float64))
+            large_r_reference_index = shape[0] // 2
+            large_r_reference_r = float(r_values[large_r_reference_index])
             large_r_relative_difference = abs(
-                float(structure_function_longitudinal[-1]) - large_r_reference
+                float(structure_function_longitudinal[large_r_reference_index]) - large_r_reference
             ) / max(abs(large_r_reference), 1.0e-30)
             print("Longitudinal structure function diagnostic:")
             print(f"  Largest saved r: {float(r_values[-1]):.8f}")
-            print(f"  S_L(r_max): {float(structure_function_longitudinal[-1]):.8f}")
+            print(f"  Reference comparison r: {large_r_reference_r:.8f}")
+            print(f"  S_L(r_ref): {float(structure_function_longitudinal[large_r_reference_index]):.8f}")
             print(f"  4/3 * sum(E_total): {large_r_reference:.8f}")
-            print(f"  Relative difference at r_max: {large_r_relative_difference:.8e}")
+            print(f"  Relative difference at r_ref: {large_r_relative_difference:.8e}")
             third_order_s3_x = zero_near_zero(third_order_s3_x)
             third_order_s3_y = zero_near_zero(third_order_s3_y)
             third_order_s3_z = zero_near_zero(third_order_s3_z)
@@ -360,6 +365,7 @@ def analyze_file_parallel(
                     dx,
                     dy,
                     dz,
+                    full_domain=structure_function_full_domain,
                 )
                 third_order_direct_max_abs_diff = float(
                     max(
@@ -436,10 +442,12 @@ def analyze_file_parallel(
                 domain_length,
                 large_r_reference,
                 large_r_relative_difference,
+                large_r_reference_r,
                 max_abs_directional_spread,
                 r_at_max_abs_directional_spread,
                 max_rel_directional_spread,
                 r_at_max_rel_directional_spread,
+                "full-box" if structure_function_full_domain else "half-box",
             )
             third_order_result["path"] = structure_function_path
             third_order_result["shell_r_values"] = shell_r_values
@@ -513,6 +521,24 @@ Examples:
         default=5_000_000,
         help="Chunk size used when rank 0 reads the input file.",
     )
+    parser.add_argument(
+        "--structure-functions",
+        action="store_true",
+        help="Compute 2nd- and 3rd-order structure functions in addition to spectra.",
+    )
+    parser.add_argument(
+        "--structure-function-full-box",
+        dest="structure_function_full_box",
+        action="store_true",
+        help="Sample axis-aligned structure functions over the full periodic box (r = 0..L). This is the default.",
+    )
+    parser.add_argument(
+        "--structure-function-half-box",
+        dest="structure_function_full_box",
+        action="store_false",
+        help="Sample axis-aligned structure functions over only the shortest periodic half-box (r = 0..L/2).",
+    )
+    parser.set_defaults(structure_function_full_box=True)
     parser.add_argument("--visualize", "-v", action="store_true", help="Reserved for future use.")
     parser.add_argument("--no-plot", action="store_true", help="Skip plotting spectra on rank 0.")
     args = parser.parse_args()
@@ -531,6 +557,8 @@ Examples:
             chunk_size=args.chunk_size,
             backend_name=args.backend,
             visualize=args.visualize,
+            compute_structure_functions=args.structure_functions,
+            structure_function_full_domain=args.structure_function_full_box,
         )
         if rank == 0:
             results.append(result)

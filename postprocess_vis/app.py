@@ -22,26 +22,18 @@ from postprocess_fft.transform import local_wavenumber_mesh
 from postprocess_fft.common import global_range
 from postprocess_fft.common import heffte
 from postprocess_lib.prepare import ensure_structured_h5
+from postprocess_vis.field_specs import BUILTIN_FIELD_MAP
+from postprocess_vis.field_specs import DENSITY_DATASET_NAME
+from postprocess_vis.field_specs import DERIVED_DATASET_NAMES
+from postprocess_vis.field_specs import DERIVED_FIELD_FAMILIES
+from postprocess_vis.field_specs import build_available_field_specs
+from postprocess_vis.field_specs import default_requested_field_names
 from postprocess_vis.slice_data import default_slice_data_output
 from postprocess_vis.slice_data import initialize_slice_data_file
 from postprocess_vis.slice_data import storage_slice_tag
 from postprocess_vis.slice_data import write_slice_limits_serial
 from postprocess_vis.slice_data import write_slice_plane_parallel
 from postprocess_vis.slice_data import write_slice_plane_serial
-
-
-BUILTIN_FIELD_MAP = {
-    "velocity_magnitude": ("velocity_magnitude", "velocity_magnitude", r"$|\mathbf{u}|$", "velocity"),
-    "vx": ("vx", "vx", r"$u_1$", "velocity"),
-    "vy": ("vy", "vy", r"$u_2$", "velocity"),
-    "vz": ("vz", "vz", r"$u_3$", "velocity"),
-    "vorticity_magnitude": ("vorticity_magnitude", "vorticity_magnitude", r"$|\boldsymbol{\omega}|$", "vorticity"),
-    "wx": ("omega_x", "wx", r"$\omega_1$", "vorticity"),
-    "wy": ("omega_y", "wy", r"$\omega_2$", "vorticity"),
-    "wz": ("omega_z", "wz", r"$\omega_3$", "vorticity"),
-    "q_criterion": ("q_criterion", "q_criterion", r"$Q$", "qcriterion"),
-    "r_criterion": ("r_criterion", "r_criterion", r"$R$", "rcriterion"),
-}
 
 PLANE_NAMES = {
     "x": "yz",
@@ -83,19 +75,8 @@ def canonical_field_name(field_name):
 
 def available_field_specs(filepath):
     """Return the built-in and dataset-backed field specs available in one HDF5 file."""
-    field_specs = dict(BUILTIN_FIELD_MAP)
     with h5py.File(filepath, "r") as hf:
-        fields = hf["fields"]
-        for dataset_name in sorted(fields.keys()):
-            if dataset_name in {"vx", "vy", "vz"}:
-                continue
-            if dataset_name in field_specs:
-                continue
-            dataset = fields[dataset_name]
-            display_name = str(dataset.attrs.get("display_name", dataset_name))
-            plot_label = str(dataset.attrs.get("plot_label", display_name))
-            field_specs[dataset_name] = (dataset_name, dataset_name, plot_label, "scalar")
-    return field_specs
+        return build_available_field_specs(hf["fields"])
 
 
 def _yt_font_style():
@@ -340,6 +321,8 @@ def compute_local_derived_fields(
     include_vorticity=False,
     include_qcriterion=False,
     include_rcriterion=False,
+    include_density_gradient=False,
+    density_dataset_name=None,
 ):
     """Compute distributed real-space derived velocity fields with HeFFTe."""
     shape = meta["shape"]
@@ -347,19 +330,21 @@ def compute_local_derived_fields(
     boxes = build_boxes(shape, proc_grid)
     local_box = boxes[comm.Get_rank()]
     local_shape = box_shape(local_box)
-    local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
 
     backend = get_backend(backend_name)
     plan = heffte.fft3d(backend, local_box, local_box, comm)
     KX, KY, KZ = local_wavenumber_mesh(shape, local_box, meta["dx"], meta["dy"], meta["dz"])
 
-    vx_k = forward_field(plan, local_vx).reshape(local_shape, order="C")
-    vy_k = forward_field(plan, local_vy).reshape(local_shape, order="C")
-    vz_k = forward_field(plan, local_vz).reshape(local_shape, order="C")
-
     derived_fields = {
         "local_box": local_box,
     }
+
+    vx_k = vy_k = vz_k = None
+    if include_vorticity or include_qcriterion or include_rcriterion:
+        local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
+        vx_k = forward_field(plan, local_vx).reshape(local_shape, order="C")
+        vy_k = forward_field(plan, local_vy).reshape(local_shape, order="C")
+        vz_k = forward_field(plan, local_vz).reshape(local_shape, order="C")
 
     if include_vorticity:
         omega_x_k = 1j * (KY * vz_k - KZ * vy_k)
@@ -405,6 +390,16 @@ def compute_local_derived_fields(
             )
             derived_fields["r_criterion"] = -det_grad_u
 
+    if include_density_gradient:
+        if not density_dataset_name:
+            raise ValueError("A density dataset name is required to compute the density-gradient magnitude.")
+        local_density = read_structured_local_dataset(filepath, density_dataset_name, local_box, comm)
+        density_k = forward_field(plan, local_density).reshape(local_shape, order="C")
+        drho_dx = backward_field(plan, 1j * KX * density_k, local_shape)
+        drho_dy = backward_field(plan, 1j * KY * density_k, local_shape)
+        drho_dz = backward_field(plan, 1j * KZ * density_k, local_shape)
+        derived_fields["density_gradient_magnitude"] = np.sqrt(drho_dx**2 + drho_dy**2 + drho_dz**2)
+
     return derived_fields
 
 
@@ -418,7 +413,7 @@ def compute_global_field_limits(filepath, dataset_name, field_family, meta, comm
     if dataset_name == "velocity_magnitude":
         local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
         local_values = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
-    elif dataset_name in {"vorticity_magnitude", "omega_x", "omega_y", "omega_z", "q_criterion", "r_criterion"}:
+    elif dataset_name in DERIVED_DATASET_NAMES:
         if derived_cache is None or dataset_name not in derived_cache:
             raise ValueError(f"Derived cache is missing required field '{dataset_name}'.")
         local_values = np.asarray(derived_cache[dataset_name], dtype=np.float64)
@@ -500,11 +495,12 @@ def append_slice_metadata_log(
 
 def output_source_path(data_file, dataset_name, field_family):
     """Return the path whose stem should drive default output naming for one field."""
-    if field_family != "scalar":
+    if field_family not in {"scalar", "density_gradient"}:
         return data_file
 
+    source_dataset_name = DENSITY_DATASET_NAME if field_family == "density_gradient" else dataset_name
     with h5py.File(data_file, "r") as hf:
-        dataset = hf["fields"][dataset_name]
+        dataset = hf["fields"][source_dataset_name]
         source_path = dataset.attrs.get("source_path")
         source_h5 = dataset.attrs.get("source_h5")
         source_txt = dataset.attrs.get("source_txt")
@@ -708,8 +704,7 @@ def resolve_requested_fields(filepath, field_names):
             q_index = requested_fields.index("q_criterion")
             requested_fields.insert(q_index + 1, "r_criterion")
     else:
-        scalar_fields = [name for name, spec in field_lookup.items() if spec[3] == "scalar"]
-        requested_fields = ["velocity_magnitude", "vorticity_magnitude", "q_criterion", "r_criterion", *scalar_fields]
+        requested_fields = default_requested_field_names(field_lookup)
 
     missing = [name for name in requested_fields if name not in field_lookup]
     if missing:
@@ -754,6 +749,7 @@ def run_visualization(
     needs_vorticity = any(spec[3] == "vorticity" for spec in field_specs)
     needs_qcriterion = any(spec[3] == "qcriterion" for spec in field_specs)
     needs_rcriterion = any(spec[3] == "rcriterion" for spec in field_specs)
+    needs_density_gradient = any(spec[3] == "density_gradient" for spec in field_specs)
     derived_cache = None
 
     if rank == 0:
@@ -782,7 +778,7 @@ def run_visualization(
         comm.Barrier()
         log_rank0(rank, f"Initialized slice-data file in {time.perf_counter() - init_start:.2f}s")
 
-    if needs_vorticity or needs_qcriterion or needs_rcriterion:
+    if needs_vorticity or needs_qcriterion or needs_rcriterion or needs_density_gradient:
         derived_start = time.perf_counter()
         if needs_vorticity:
             log_rank0(rank, "Computing distributed vorticity field with HeFFTe inverse FFT...")
@@ -790,6 +786,8 @@ def run_visualization(
             log_rank0(rank, "Computing distributed Q-criterion field with HeFFTe inverse FFT...")
         if needs_rcriterion:
             log_rank0(rank, "Computing distributed R-criterion field with HeFFTe inverse FFT...")
+        if needs_density_gradient:
+            log_rank0(rank, "Computing distributed density-gradient magnitude field with HeFFTe inverse FFT...")
         derived_cache = compute_local_derived_fields(
             prepared_path,
             meta,
@@ -798,6 +796,8 @@ def run_visualization(
             include_vorticity=needs_vorticity,
             include_qcriterion=needs_qcriterion,
             include_rcriterion=needs_rcriterion,
+            include_density_gradient=needs_density_gradient,
+            density_dataset_name=(DENSITY_DATASET_NAME if needs_density_gradient else None),
         )
         comm.Barrier()
         if needs_vorticity:
@@ -806,6 +806,8 @@ def run_visualization(
             log_rank0(rank, f"Completed distributed Q-criterion field in {time.perf_counter() - derived_start:.2f}s")
         if needs_rcriterion:
             log_rank0(rank, f"Completed distributed R-criterion field in {time.perf_counter() - derived_start:.2f}s")
+        if needs_density_gradient:
+            log_rank0(rank, f"Completed distributed density-gradient field in {time.perf_counter() - derived_start:.2f}s")
 
     outputs = []
     # DANE can hang in the legacy MPI slice-data write path for x-normal slices,
@@ -838,7 +840,7 @@ def run_visualization(
         for axis_name, plane_index, slice_tag in requests:
             slice_start = time.perf_counter()
             stored_slice_tag = storage_slice_tag(axis_name, slice_tag)
-            if field_family in {"vorticity", "qcriterion", "rcriterion"}:
+            if field_family in DERIVED_FIELD_FAMILIES:
                 local_bounds, local_plane = extract_plane_from_boxes_local(
                     axis_name,
                     derived_cache["local_box"],
@@ -989,7 +991,7 @@ def main():
         "--field",
         action="append",
         default=[],
-        help="Field to plot. Repeat to render multiple fields. If omitted, render velocity, vorticity, Q, R, and any appended scalar fields.",
+        help="Field to plot. Repeat to render multiple fields. If omitted, render velocity, vorticity, Q, R, density-gradient magnitude when density exists, and any appended scalar fields.",
     )
     parser.add_argument("--cmap", default="RdBu_r", help="Matplotlib colormap")
     parser.add_argument("--width", type=float, default=None, help="Optional square plot width in domain units")
@@ -1004,7 +1006,7 @@ def main():
         "--backend",
         default="heffte_fftw",
         choices=["heffte_fftw", "heffte_stock"],
-        help="HeFFTe backend used when deriving vorticity and Q-criterion from FFTs.",
+        help="HeFFTe backend used when deriving vorticity, Q/R, and density-gradient fields from FFTs.",
     )
     args = parser.parse_args()
     run_visualization(

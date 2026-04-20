@@ -295,10 +295,12 @@ def save_structure_functions(
     domain_length,
     large_r_reference,
     large_r_relative_difference,
+    large_r_reference_r,
     max_abs_directional_spread,
     r_at_max_abs_directional_spread,
     max_rel_directional_spread,
     r_at_max_rel_directional_spread,
+    r_sampling,
 ):
     """Save second- and third-order structure functions in one combined text file."""
     stem = _spectra_output_stem(filename)
@@ -318,12 +320,13 @@ def save_structure_functions(
     with open(output_path, "w", encoding="utf-8") as handle:
         handle.write(f"# Step: {step_number}, Time: {float(time_value):.16e}\n")
         handle.write(f"# Domain length used in kernel/physical shifts: {float(domain_length):.16e}\n")
+        handle.write(f"# Axis-aligned r sampling: {r_sampling}\n")
         handle.write(
             f"# Large-r reference for S2 (4/3 * sum(E_total)): "
             f"{float(large_r_reference):.16e}\n"
         )
         handle.write(
-            f"# Relative difference in S2 at largest saved r: "
+            f"# Relative difference in S2 at reference r = {float(large_r_reference_r):.16e}: "
             f"{float(large_r_relative_difference):.16e}\n"
         )
         handle.write(

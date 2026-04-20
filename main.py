@@ -49,6 +49,19 @@ Examples:
         action="store_true",
         help="Compute 2nd and 3rd order structure functions during the FFT step.",
     )
+    parser.add_argument(
+        "--structure-function-full-box",
+        dest="structure_function_full_box",
+        action="store_true",
+        help="Sample axis-aligned structure functions over the full periodic box (r = 0..L). This is the default.",
+    )
+    parser.add_argument(
+        "--structure-function-half-box",
+        dest="structure_function_full_box",
+        action="store_false",
+        help="Sample axis-aligned structure functions over only the shortest periodic half-box (r = 0..L/2).",
+    )
+    parser.set_defaults(structure_function_full_box=True)
     parser.add_argument("--slice-axis", default="z", choices=["x", "y", "z"], help="Default slice normal axis")
     parser.add_argument(
         "--slice",
@@ -60,7 +73,7 @@ Examples:
         "--slice-field",
         action="append",
         default=[],
-        help="Field for slice plots. Repeat to render multiple fields. If omitted, render velocity, vorticity, Q, R, and any appended scalar fields.",
+        help="Field for slice plots. Repeat to render multiple fields. If omitted, render velocity, vorticity, Q, R, density-gradient magnitude when density exists, and any appended scalar fields.",
     )
     parser.add_argument(
         "--scalar-file",
@@ -172,6 +185,7 @@ Examples:
                         backend_name=args.backend,
                         visualize=False,
                         compute_structure_functions=args.structure_functions,
+                        structure_function_full_domain=args.structure_function_full_box,
                     )
                     if rank == 0:
                         fft_results.append(fft_result)

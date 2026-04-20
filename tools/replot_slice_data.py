@@ -7,7 +7,7 @@ Example commands:
       1 -> vorticity_magnitude
       2 -> velocity_magnitude
       3 -> the saved scalar field when there is exactly one scalar field
-      q_criterion and r_criterion are available by explicit field name when present
+      q_criterion, r_criterion, and density_gradient_magnitude are available by explicit field name when present
     --slice selects which saved plane to render using:
       1 -> xy_center
       2 -> xy_face
@@ -1457,7 +1457,7 @@ def main():
     parser.add_argument(
         "--field",
         default=None,
-        help="Field selector to replot: 1=vorticity_magnitude, 2=velocity_magnitude, 3=the saved scalar field when unique, or an explicit field name such as q_criterion or r_criterion.",
+        help="Field selector to replot: 1=vorticity_magnitude, 2=velocity_magnitude, 3=the saved scalar field when unique, or an explicit field name such as q_criterion, r_criterion, or density_gradient_magnitude.",
     )
     parser.add_argument(
         "--slice",

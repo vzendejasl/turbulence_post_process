@@ -192,7 +192,13 @@ def compute_longitudinal_structure_function_from_spectrum(
     return r_values, s_longitudinal
 
 
-def compute_third_order_structure_function_direct(vx, vy, vz, dx, dy, dz):
+def _axis_structure_function_shifts(point_count, full_domain):
+    """Return axis-aligned periodic shifts for either half-box or full-box sampling."""
+    max_shift = int(point_count) if full_domain else int(point_count // 2)
+    return np.arange(max_shift + 1, dtype=np.int64)
+
+
+def compute_third_order_structure_function_direct(vx, vy, vz, dx, dy, dz, full_domain=False):
     """Compute axis-aligned third-order longitudinal structure functions in physical space."""
     vx = np.asarray(vx, dtype=np.float64)
     vy = np.asarray(vy, dtype=np.float64)
@@ -207,8 +213,7 @@ def compute_third_order_structure_function_direct(vx, vy, vz, dx, dy, dz):
     if not (np.isclose(dx, dy) and np.isclose(dx, dz)):
         raise ValueError("Third-order direct structure function currently requires uniform spacing dx = dy = dz.")
 
-    max_shift = nx // 2
-    shifts = np.arange(max_shift + 1, dtype=np.int64)
+    shifts = _axis_structure_function_shifts(nx, full_domain)
     r_values = shifts.astype(np.float64) * float(dx)
 
     s3_x = np.empty_like(r_values, dtype=np.float64)
@@ -236,23 +241,25 @@ def _third_order_validate_grid(shape, dx, dy, dz):
         raise ValueError("Third-order structure function currently requires uniform spacing dx = dy = dz.")
 
 
-def _extract_axis_line_from_local_volume(local_volume, shape, box, axis, comm):
-    count = int(shape[axis] // 2) + 1
+def _extract_axis_line_from_local_volume(local_volume, shape, box, axis, comm, full_domain=False):
+    shifts = _axis_structure_function_shifts(shape[axis], full_domain)
+    count = int(len(shifts))
     local_line = np.zeros(count, dtype=np.float64)
     box_low = tuple(int(value) for value in box.low)
     box_high = tuple(int(value) for value in box.high)
 
-    for shift in range(count):
+    axis_count = int(shape[axis])
+    for output_index, shift in enumerate(shifts):
         global_index = [0, 0, 0]
-        global_index[axis] = shift
+        global_index[axis] = int(shift % axis_count)
         if all(box_low[dim] <= global_index[dim] <= box_high[dim] for dim in range(3)):
             local_index = tuple(global_index[dim] - box_low[dim] for dim in range(3))
-            local_line[shift] = float(local_volume[local_index])
+            local_line[output_index] = float(local_volume[local_index])
 
     return comm.allreduce(local_line, op=MPI.SUM)
 
 
-def _compute_axis_third_order_fft(component, axis, plan, local_shape, shape, box, comm):
+def _compute_axis_third_order_fft(component, axis, plan, local_shape, shape, box, comm, full_domain=False):
     global_points = float(np.prod(shape))
     component_sq = component ** 2
 
@@ -262,8 +269,22 @@ def _compute_axis_third_order_fft(component, axis, plan, local_shape, shape, box
     corr_sq_u_local = backward_field(plan, np.conj(component_sq_k) * component_k, local_shape)
     corr_u_sq_local = backward_field(plan, np.conj(component_k) * component_sq_k, local_shape)
 
-    corr_sq_u = _extract_axis_line_from_local_volume(corr_sq_u_local, shape, box, axis, comm) / global_points
-    corr_u_sq = _extract_axis_line_from_local_volume(corr_u_sq_local, shape, box, axis, comm) / global_points
+    corr_sq_u = _extract_axis_line_from_local_volume(
+        corr_sq_u_local,
+        shape,
+        box,
+        axis,
+        comm,
+        full_domain=full_domain,
+    ) / global_points
+    corr_u_sq = _extract_axis_line_from_local_volume(
+        corr_u_sq_local,
+        shape,
+        box,
+        axis,
+        comm,
+        full_domain=full_domain,
+    ) / global_points
 
     return 3.0 * (corr_sq_u - corr_u_sq)
 
@@ -290,16 +311,29 @@ def _local_shortest_periodic_displacements(shape, box):
     return mx, my, mz
 
 
-def compute_third_order_structure_function_fft(plan, local_shape, box, vx, vy, vz, shape, dx, dy, dz, comm):
+def compute_third_order_structure_function_fft(
+    plan,
+    local_shape,
+    box,
+    vx,
+    vy,
+    vz,
+    shape,
+    dx,
+    dy,
+    dz,
+    comm,
+    full_domain=False,
+):
     """Compute axis-aligned third-order longitudinal structure functions via HeFFTe FFT correlations."""
     _third_order_validate_grid(shape, dx, dy, dz)
 
-    count = int(shape[0] // 2) + 1
-    r_values = np.arange(count, dtype=np.float64) * float(dx)
+    shifts = _axis_structure_function_shifts(shape[0], full_domain)
+    r_values = shifts.astype(np.float64) * float(dx)
 
-    s3_x = _compute_axis_third_order_fft(vx, 0, plan, local_shape, shape, box, comm)
-    s3_y = _compute_axis_third_order_fft(vy, 1, plan, local_shape, shape, box, comm)
-    s3_z = _compute_axis_third_order_fft(vz, 2, plan, local_shape, shape, box, comm)
+    s3_x = _compute_axis_third_order_fft(vx, 0, plan, local_shape, shape, box, comm, full_domain=full_domain)
+    s3_y = _compute_axis_third_order_fft(vy, 1, plan, local_shape, shape, box, comm, full_domain=full_domain)
+    s3_z = _compute_axis_third_order_fft(vz, 2, plan, local_shape, shape, box, comm, full_domain=full_domain)
     s3_avg = (s3_x + s3_y + s3_z) / 3.0
     return r_values, s3_x, s3_y, s3_z, s3_avg
 
