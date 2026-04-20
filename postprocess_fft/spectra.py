@@ -13,36 +13,59 @@ from .transform import forward_field
 from .transform import local_integer_wavenumber_mesh
 
 
-def compute_energy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
+def _shell_bin_geometry(shape, box):
     nx, _, _ = shape
-    norm = float(np.prod(shape))
-    energy_density = 0.5 * (
-        np.abs(vx_k / norm) ** 2
-        + np.abs(vy_k / norm) ** 2
-        + np.abs(vz_k / norm) ** 2
-    )
-
     KX_int, KY_int, KZ_int = local_integer_wavenumber_mesh(shape, box)
     k_magnitude = np.sqrt(KX_int**2 + KY_int**2 + KZ_int**2)
-
     k_max_int = int(math.ceil(nx * 0.5 * math.sqrt(3.0)))
     k_bin_edges = np.linspace(0.5, k_max_int + 0.5, k_max_int + 1)
     if nx * 0.5 * math.sqrt(3.0) < k_bin_edges[-2]:
         k_bin_edges = k_bin_edges[:-1]
     k_bin_centers = 0.5 * (k_bin_edges[:-1] + k_bin_edges[1:])
+    return k_magnitude, k_bin_edges, k_bin_centers
 
+
+def _reduce_shell_histogram(k_magnitude, k_bin_edges, weights, comm):
     local_hist, _ = np.histogram(
         k_magnitude.ravel(order="C"),
         bins=k_bin_edges,
-        weights=energy_density.ravel(order="C"),
+        weights=np.asarray(weights, dtype=np.float64).ravel(order="C"),
     )
 
     global_hist = np.zeros_like(local_hist) if comm.Get_rank() == 0 else None
     comm.Reduce(local_hist, global_hist, op=MPI.SUM, root=0)
+    return global_hist
+
+
+def _component_shell_spectra(component_x_density, component_y_density, component_z_density, shape, box, comm):
+    k_magnitude, k_bin_edges, k_bin_centers = _shell_bin_geometry(shape, box)
+    global_hist_x = _reduce_shell_histogram(k_magnitude, k_bin_edges, component_x_density, comm)
+    global_hist_y = _reduce_shell_histogram(k_magnitude, k_bin_edges, component_y_density, comm)
+    global_hist_z = _reduce_shell_histogram(k_magnitude, k_bin_edges, component_z_density, comm)
+    return k_bin_centers, global_hist_x, global_hist_y, global_hist_z
+
+
+def compute_energy_component_spectra_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
+    norm = float(np.prod(shape))
+    component_x_density = 0.5 * np.abs(vx_k / norm) ** 2
+    component_y_density = 0.5 * np.abs(vy_k / norm) ** 2
+    component_z_density = 0.5 * np.abs(vz_k / norm) ** 2
+    return _component_shell_spectra(component_x_density, component_y_density, component_z_density, shape, box, comm)
+
+
+def compute_energy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
+    k_bin_centers, global_hist_x, global_hist_y, global_hist_z = compute_energy_component_spectra_from_modes(
+        vx_k,
+        vy_k,
+        vz_k,
+        shape,
+        box,
+        comm,
+    )
+    global_hist = None if global_hist_x is None else global_hist_x + global_hist_y + global_hist_z
     return k_bin_centers, global_hist
 
-
-def compute_enstrophy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
+def compute_enstrophy_component_spectra_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
     norm = float(np.prod(shape))
     vx_kn = vx_k / norm
     vy_kn = vy_k / norm
@@ -53,28 +76,30 @@ def compute_enstrophy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
     omega_y_k = 1j * (KZ_int * vx_kn - KX_int * vz_kn)
     omega_z_k = 1j * (KX_int * vy_kn - KY_int * vx_kn)
 
-    enstrophy_density = 0.5 * (
-        np.abs(omega_x_k) ** 2 + np.abs(omega_y_k) ** 2 + np.abs(omega_z_k) ** 2
+    component_x_density = 0.5 * np.abs(omega_x_k) ** 2
+    component_y_density = 0.5 * np.abs(omega_y_k) ** 2
+    component_z_density = 0.5 * np.abs(omega_z_k) ** 2
+    local_total_enstrophy = np.sum(
+        component_x_density + component_y_density + component_z_density,
+        dtype=np.float64,
     )
-    local_total_enstrophy = np.sum(enstrophy_density, dtype=np.float64)
     total_enstrophy = comm.allreduce(local_total_enstrophy, op=MPI.SUM)
-
-    nx, _, _ = shape
-    k_magnitude = np.sqrt(KX_int**2 + KY_int**2 + KZ_int**2)
-    k_max_int = int(math.ceil(nx * 0.5 * math.sqrt(3.0)))
-    k_bin_edges = np.linspace(0.5, k_max_int + 0.5, k_max_int + 1)
-    if nx * 0.5 * math.sqrt(3.0) < k_bin_edges[-2]:
-        k_bin_edges = k_bin_edges[:-1]
-    k_bin_centers = 0.5 * (k_bin_edges[:-1] + k_bin_edges[1:])
-
-    local_hist, _ = np.histogram(
-        k_magnitude.ravel(order="C"),
-        bins=k_bin_edges,
-        weights=enstrophy_density.ravel(order="C"),
+    k_bin_centers, global_hist_x, global_hist_y, global_hist_z = _component_shell_spectra(
+        component_x_density,
+        component_y_density,
+        component_z_density,
+        shape,
+        box,
+        comm,
     )
+    return k_bin_centers, global_hist_x, global_hist_y, global_hist_z, total_enstrophy
 
-    global_hist = np.zeros_like(local_hist) if comm.Get_rank() == 0 else None
-    comm.Reduce(local_hist, global_hist, op=MPI.SUM, root=0)
+
+def compute_enstrophy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
+    k_bin_centers, global_hist_x, global_hist_y, global_hist_z, total_enstrophy = (
+        compute_enstrophy_component_spectra_from_modes(vx_k, vy_k, vz_k, shape, box, comm)
+    )
+    global_hist = None if global_hist_x is None else global_hist_x + global_hist_y + global_hist_z
     return k_bin_centers, global_hist, total_enstrophy
 
 

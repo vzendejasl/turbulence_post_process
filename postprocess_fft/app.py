@@ -17,6 +17,7 @@ from .io import read_data_file_chunked
 from .io import read_data_file_header
 from .io import read_structured_local_fields
 from .io import plot_qr_joint_pdf
+from .io import save_component_spectra
 from .io import save_qr_joint_pdf
 from .io import save_structure_functions
 from .io import save_spectra
@@ -26,8 +27,9 @@ from .layout import build_boxes
 from .layout import choose_proc_grid
 from .layout import scatter_field
 from .spectra import compute_energy_dissipation_enstrophy
+from .spectra import compute_energy_component_spectra_from_modes
 from .spectra import compute_energy_spectrum_from_modes
-from .spectra import compute_enstrophy_spectrum_from_modes
+from .spectra import compute_enstrophy_component_spectra_from_modes
 from .spectra import compute_helicity_spectrum_from_modes
 from .spectra import compute_shell_averaged_third_order_structure_function_fft
 from .spectra import compute_third_order_structure_function_direct
@@ -234,10 +236,26 @@ def analyze_file_parallel(
     if root:
         print()
         print("Computing distributed energy spectra...")
-    k_centers, E_total = compute_energy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, local_box, comm)
+    k_centers, E_total_x, E_total_y, E_total_z = compute_energy_component_spectra_from_modes(
+        vx_k,
+        vy_k,
+        vz_k,
+        shape,
+        local_box,
+        comm,
+    )
+    E_total = None if E_total_x is None else E_total_x + E_total_y + E_total_z
     _, E_comp = compute_energy_spectrum_from_modes(vx_c_k, vy_c_k, vz_c_k, shape, local_box, comm)
     _, E_rot = compute_energy_spectrum_from_modes(vx_r_k, vy_r_k, vz_r_k, shape, local_box, comm)
-    _, Enst, total_enstrophy = compute_enstrophy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, local_box, comm)
+    _, Enst_x, Enst_y, Enst_z, total_enstrophy = compute_enstrophy_component_spectra_from_modes(
+        vx_k,
+        vy_k,
+        vz_k,
+        shape,
+        local_box,
+        comm,
+    )
+    Enst = None if Enst_x is None else Enst_x + Enst_y + Enst_z
     _, Hel = compute_helicity_spectrum_from_modes(vx_k, vy_k, vz_k, shape, local_box, comm)
 
     KX_int, KY_int, KZ_int = local_integer_wavenumber_mesh(shape, local_box)
@@ -289,9 +307,15 @@ def analyze_file_parallel(
     result = None
     if root:
         E_total = zero_near_zero(E_total)
+        E_total_x = zero_near_zero(E_total_x)
+        E_total_y = zero_near_zero(E_total_y)
+        E_total_z = zero_near_zero(E_total_z)
         E_comp = zero_near_zero(E_comp)
         E_rot = zero_near_zero(E_rot)
         Enst = zero_near_zero(Enst)
+        Enst_x = zero_near_zero(Enst_x)
+        Enst_y = zero_near_zero(Enst_y)
+        Enst_z = zero_near_zero(Enst_z)
         Hel = zero_near_zero(Hel)
         domain_length = float(dx) * float(shape[0])
         r_values = None
@@ -425,6 +449,18 @@ def analyze_file_parallel(
             rot_ke,
             total_enstrophy,
         )
+        save_component_spectra(
+            k_centers,
+            E_total,
+            E_total_x,
+            E_total_y,
+            E_total_z,
+            Enst,
+            Enst_x,
+            Enst_y,
+            Enst_z,
+            filename,
+        )
         if compute_structure_functions:
             structure_function_path = save_structure_functions(
                 r_values,
@@ -468,9 +504,15 @@ def analyze_file_parallel(
         result = {
             "k_centers": k_centers,
             "E_total": E_total,
+            "E_total_x": E_total_x,
+            "E_total_y": E_total_y,
+            "E_total_z": E_total_z,
             "E_comp": E_comp,
             "E_rot": E_rot,
             "Enstrophy": Enst,
+            "Enstrophy_x": Enst_x,
+            "Enstrophy_y": Enst_y,
+            "Enstrophy_z": Enst_z,
             "Helicity": Hel,
             "E_total_compensated": E_total_comp,
             "E_comp_compensated": E_comp_comp,

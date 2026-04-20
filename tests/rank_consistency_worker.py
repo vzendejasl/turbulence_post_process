@@ -39,14 +39,26 @@ def collect_metrics(input_path: Path) -> dict[str, object] | None:
             return None
 
         spectra_path = work_path.with_name(f"{work_path.stem}_spectra.txt")
+        component_spectra_path = work_path.with_name(f"{work_path.stem}_spectra_components.txt")
         table = np.loadtxt(spectra_path, delimiter=",", skiprows=1)
         if table.ndim == 1:
             table = table.reshape(1, -1)
+        component_table = np.loadtxt(component_spectra_path, delimiter=",", skiprows=1)
+        if component_table.ndim == 1:
+            component_table = component_table.reshape(1, -1)
 
         return {
             "k": np.asarray(table[:, 0], dtype=np.float64).tolist(),
             "e_total": np.asarray(table[:, 1], dtype=np.float64).tolist(),
             "enstrophy": np.asarray(table[:, 4], dtype=np.float64).tolist(),
+            "component_e_total": np.asarray(component_table[:, 1], dtype=np.float64).tolist(),
+            "e_total_x": np.asarray(component_table[:, 2], dtype=np.float64).tolist(),
+            "e_total_y": np.asarray(component_table[:, 3], dtype=np.float64).tolist(),
+            "e_total_z": np.asarray(component_table[:, 4], dtype=np.float64).tolist(),
+            "component_enstrophy": np.asarray(component_table[:, 5], dtype=np.float64).tolist(),
+            "enstrophy_x": np.asarray(component_table[:, 6], dtype=np.float64).tolist(),
+            "enstrophy_y": np.asarray(component_table[:, 7], dtype=np.float64).tolist(),
+            "enstrophy_z": np.asarray(component_table[:, 8], dtype=np.float64).tolist(),
             "spectral_total_ke": float(np.sum(table[:, 1], dtype=np.float64)),
             "spectral_total_enstrophy": float(np.sum(table[:, 4], dtype=np.float64)),
         }

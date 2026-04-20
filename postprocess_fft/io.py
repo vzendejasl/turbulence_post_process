@@ -240,6 +240,51 @@ def save_spectra(
         handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
 
 
+def save_component_spectra(
+    k_centers,
+    e_total,
+    e_total_x,
+    e_total_y,
+    e_total_z,
+    enstrophy,
+    enstrophy_x,
+    enstrophy_y,
+    enstrophy_z,
+    filename,
+):
+    """Save per-component energy and enstrophy spectra beside the main spectra."""
+    stem = _spectra_output_stem(filename)
+    summary = np.column_stack(
+        (
+            np.asarray(k_centers, dtype=np.float64),
+            np.asarray(e_total, dtype=np.float64),
+            np.asarray(e_total_x, dtype=np.float64),
+            np.asarray(e_total_y, dtype=np.float64),
+            np.asarray(e_total_z, dtype=np.float64),
+            np.asarray(enstrophy, dtype=np.float64),
+            np.asarray(enstrophy_x, dtype=np.float64),
+            np.asarray(enstrophy_y, dtype=np.float64),
+            np.asarray(enstrophy_z, dtype=np.float64),
+        )
+    )
+
+    header_labels = [
+        "k",
+        "E_total",
+        "E_total_x",
+        "E_total_y",
+        "E_total_z",
+        "Enstrophy",
+        "Enstrophy_x",
+        "Enstrophy_y",
+        "Enstrophy_z",
+    ]
+    with open(f"{stem}_components.txt", "w", encoding="utf-8") as handle:
+        handle.write(", ".join(f"{label:>23s}" for label in header_labels) + "\n")
+        for row in summary:
+            handle.write(", ".join(f"{value:>23.16e}" for value in row) + "\n")
+
+
 def save_structure_function(
     r_values,
     s_longitudinal,

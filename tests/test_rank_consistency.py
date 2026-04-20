@@ -80,6 +80,14 @@ def compare_rank_family(case_name: str, case_path: Path) -> list[str]:
     reference = metrics_by_rank[1]
     reference_e = np.asarray(reference["e_total"], dtype=np.float64)
     reference_en = np.asarray(reference["enstrophy"], dtype=np.float64)
+    reference_component_e = np.asarray(reference["component_e_total"], dtype=np.float64)
+    reference_ex = np.asarray(reference["e_total_x"], dtype=np.float64)
+    reference_ey = np.asarray(reference["e_total_y"], dtype=np.float64)
+    reference_ez = np.asarray(reference["e_total_z"], dtype=np.float64)
+    reference_component_en = np.asarray(reference["component_enstrophy"], dtype=np.float64)
+    reference_enx = np.asarray(reference["enstrophy_x"], dtype=np.float64)
+    reference_eny = np.asarray(reference["enstrophy_y"], dtype=np.float64)
+    reference_enz = np.asarray(reference["enstrophy_z"], dtype=np.float64)
     reference_ke = float(reference["spectral_total_ke"])
     reference_enst = float(reference["spectral_total_enstrophy"])
 
@@ -92,9 +100,25 @@ def compare_rank_family(case_name: str, case_path: Path) -> list[str]:
         trial = metrics_by_rank[ranks]
         trial_e = np.asarray(trial["e_total"], dtype=np.float64)
         trial_en = np.asarray(trial["enstrophy"], dtype=np.float64)
+        trial_component_e = np.asarray(trial["component_e_total"], dtype=np.float64)
+        trial_ex = np.asarray(trial["e_total_x"], dtype=np.float64)
+        trial_ey = np.asarray(trial["e_total_y"], dtype=np.float64)
+        trial_ez = np.asarray(trial["e_total_z"], dtype=np.float64)
+        trial_component_en = np.asarray(trial["component_enstrophy"], dtype=np.float64)
+        trial_enx = np.asarray(trial["enstrophy_x"], dtype=np.float64)
+        trial_eny = np.asarray(trial["enstrophy_y"], dtype=np.float64)
+        trial_enz = np.asarray(trial["enstrophy_z"], dtype=np.float64)
         common_len = min(len(reference_e), len(trial_e))
         e_rel = relative_l2_error(trial_e[:common_len], reference_e[:common_len])
         en_rel = relative_l2_error(trial_en[:common_len], reference_en[:common_len])
+        component_e_rel = relative_l2_error(trial_component_e[:common_len], reference_component_e[:common_len])
+        ex_rel = relative_l2_error(trial_ex[:common_len], reference_ex[:common_len])
+        ey_rel = relative_l2_error(trial_ey[:common_len], reference_ey[:common_len])
+        ez_rel = relative_l2_error(trial_ez[:common_len], reference_ez[:common_len])
+        component_en_rel = relative_l2_error(trial_component_en[:common_len], reference_component_en[:common_len])
+        enx_rel = relative_l2_error(trial_enx[:common_len], reference_enx[:common_len])
+        eny_rel = relative_l2_error(trial_eny[:common_len], reference_eny[:common_len])
+        enz_rel = relative_l2_error(trial_enz[:common_len], reference_enz[:common_len])
         ke_abs = abs(float(trial["spectral_total_ke"]) - reference_ke)
         enst_abs = abs(float(trial["spectral_total_enstrophy"]) - reference_enst)
         ke_rel = ke_abs / max(abs(reference_ke), 1.0e-30)
@@ -104,7 +128,15 @@ def compare_rank_family(case_name: str, case_path: Path) -> list[str]:
             [
                 f"  Compared against rank {ranks}:",
                 f"    Relative L2 error in E_total(k):   {e_rel:.16e}",
+                f"    Relative L2 error in sidecar E(k): {component_e_rel:.16e}",
+                f"    Relative L2 error in E_total_x(k): {ex_rel:.16e}",
+                f"    Relative L2 error in E_total_y(k): {ey_rel:.16e}",
+                f"    Relative L2 error in E_total_z(k): {ez_rel:.16e}",
                 f"    Relative L2 error in Enstrophy(k): {en_rel:.16e}",
+                f"    Relative L2 error in sidecar Enst: {component_en_rel:.16e}",
+                f"    Relative L2 error in Enstrophy_x:  {enx_rel:.16e}",
+                f"    Relative L2 error in Enstrophy_y:  {eny_rel:.16e}",
+                f"    Relative L2 error in Enstrophy_z:  {enz_rel:.16e}",
                 f"    Relative |dKE| from spectra sum:   {ke_rel:.16e}",
                 f"    Relative |dEnstrophy| from sum:    {enst_rel:.16e}",
             ]
@@ -112,14 +144,30 @@ def compare_rank_family(case_name: str, case_path: Path) -> list[str]:
 
         if (
             e_rel > FULL_SPECTRUM_REL_TOL
+            or component_e_rel > FULL_SPECTRUM_REL_TOL
+            or ex_rel > FULL_SPECTRUM_REL_TOL
+            or ey_rel > FULL_SPECTRUM_REL_TOL
+            or ez_rel > FULL_SPECTRUM_REL_TOL
             or en_rel > FULL_SPECTRUM_REL_TOL
+            or component_en_rel > FULL_SPECTRUM_REL_TOL
+            or enx_rel > FULL_SPECTRUM_REL_TOL
+            or eny_rel > FULL_SPECTRUM_REL_TOL
+            or enz_rel > FULL_SPECTRUM_REL_TOL
             or ke_rel > INTEGRATED_TOTAL_REL_TOL
             or enst_rel > INTEGRATED_TOTAL_REL_TOL
         ):
             raise AssertionError(
                 f"Rank consistency failed for {case_name} at {ranks} ranks: "
                 f"E_total_rel_l2={e_rel:.16e}, "
+                f"sidecar_E_total_rel_l2={component_e_rel:.16e}, "
+                f"E_total_x_rel_l2={ex_rel:.16e}, "
+                f"E_total_y_rel_l2={ey_rel:.16e}, "
+                f"E_total_z_rel_l2={ez_rel:.16e}, "
                 f"Enstrophy_rel_l2={en_rel:.16e}, "
+                f"sidecar_Enstrophy_rel_l2={component_en_rel:.16e}, "
+                f"Enstrophy_x_rel_l2={enx_rel:.16e}, "
+                f"Enstrophy_y_rel_l2={eny_rel:.16e}, "
+                f"Enstrophy_z_rel_l2={enz_rel:.16e}, "
                 f"KE_rel={ke_rel:.16e}, "
                 f"Enstrophy_rel={enst_rel:.16e}"
             )

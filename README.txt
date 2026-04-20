@@ -328,6 +328,9 @@ Default slice outputs from main.py:
   - one combined slice_data/<base>_slices.h5 file containing all saved slice arrays
 
 Default Q-R analysis outputs from the FFT step:
+  - <base>_spectra.txt
+  - <base>_spectra_metadata.txt
+  - <base>_spectra_components.txt
   - <base>_spectra_qr_joint_pdf.h5
   - <base>_spectra_qr_joint_pdf.pdf
 
