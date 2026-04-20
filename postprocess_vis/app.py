@@ -28,6 +28,7 @@ from postprocess_vis.field_specs import DERIVED_DATASET_NAMES
 from postprocess_vis.field_specs import DERIVED_FIELD_FAMILIES
 from postprocess_vis.field_specs import build_available_field_specs
 from postprocess_vis.field_specs import default_requested_field_names
+from postprocess_vis.normalization_labels import format_plot_label
 from postprocess_vis.slice_data import default_slice_data_output
 from postprocess_vis.slice_data import initialize_slice_data_file
 from postprocess_vis.slice_data import storage_slice_tag
@@ -485,6 +486,7 @@ def append_slice_metadata_log(
     colorbar_min,
     colorbar_max,
     global_rms,
+    value_normalization,
     output_path,
 ):
     """Append one rendered-slice metadata block to the shared slice-plots log."""
@@ -502,6 +504,7 @@ def append_slice_metadata_log(
         f"Global 3D colorbar min: {float(colorbar_min):.16e}",
         f"Global 3D colorbar max: {float(colorbar_max):.16e}",
         f"Global 3D RMS normalization: {float(global_rms):.16e}",
+        f"Value normalization: {value_normalization}",
         f"Output: {os.path.abspath(output_path)}",
         "",
     ]
@@ -848,10 +851,14 @@ def run_visualization(
                 f"rms={global_stats['global_rms']:.6g}",
                 flush=True,
             )
-        normalization_rms = float(global_stats["global_rms"])
+        computed_rms = float(global_stats["global_rms"])
+        value_normalization = "global_rms"
+        normalization_rms = computed_rms
         if normalization_rms <= 1.0e-30:
+            value_normalization = "none"
             normalization_rms = 1.0
             log_rank0(rank, f"  RMS for {field_label} is ~0; leaving values unscaled.")
+        display_label = format_plot_label(latex_label, value_normalization=value_normalization)
         normalized_limits = (
             float(global_stats["global_min"]) / normalization_rms,
             float(global_stats["global_max"]) / normalization_rms,
@@ -910,7 +917,8 @@ def run_visualization(
                             stored_slice_tag,
                             normalized_limits[0],
                             normalized_limits[1],
-                            normalization_rms,
+                            computed_rms,
+                            value_normalization=value_normalization,
                         )
                     comm.Barrier()
                 else:
@@ -924,7 +932,8 @@ def run_visualization(
                             stored_slice_tag,
                             normalized_limits[0],
                             normalized_limits[1],
-                            normalization_rms,
+                            computed_rms,
+                            value_normalization=value_normalization,
                         )
                     comm.Barrier()
                 log_rank0(
@@ -957,7 +966,7 @@ def run_visualization(
                     axis_name,
                     plane_index,
                     field_label,
-                    latex_label,
+                    display_label,
                     cmap,
                     width,
                     rendered,
@@ -981,7 +990,8 @@ def run_visualization(
                         rendered_info["plane_max"],
                         rendered_info["colorbar_min"],
                         rendered_info["colorbar_max"],
-                        normalization_rms,
+                        computed_rms,
+                        value_normalization,
                         saved_path,
                     )
                 print(

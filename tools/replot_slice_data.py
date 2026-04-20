@@ -59,6 +59,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from postprocess_vis.normalization_labels import format_plot_label
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -286,21 +287,6 @@ def _style_contour_labels(labels):
         )
 
 
-def _star_plot_label(plot_label):
-    """Append a superscript star to a plot label."""
-    plot_label = str(plot_label)
-    if plot_label.startswith("$") and plot_label.endswith("$"):
-        core = plot_label[1:-1]
-        if "^*" in core:
-            return plot_label
-        if core.startswith("|") and core.endswith("|"):
-            return f"${core[:-1]}^*|$"
-        return f"${core}^*$"
-    if plot_label.endswith("^*"):
-        return plot_label
-    return f"{plot_label}^*"
-
-
 def _normalization_mode(normalize_requested, attrs):
     """Infer the normalization mode from the field family."""
     if not normalize_requested:
@@ -314,12 +300,28 @@ def _normalization_mode(normalize_requested, attrs):
     return "none"
 
 
+def _display_normalization_label(value_normalization, extra_normalization):
+    """Return one combined normalization description string."""
+    modes = []
+    value_mode = str(value_normalization or "none").strip()
+    extra_mode = str(extra_normalization or "none").strip()
+    if value_mode and value_mode != "none":
+        modes.append(value_mode)
+    if extra_mode and extra_mode != "none":
+        modes.append(extra_mode)
+    if not modes:
+        return "none"
+    return "+".join(modes)
+
+
 def _apply_normalization(saved, normalize, print_stats=False):
     """Return a copy of saved slice data with optional normalization applied."""
     values_raw = _prepare_plot_values(saved["values"])
     attrs = dict(saved["attrs"])
     values = values_raw.copy()
     mode = _normalization_mode(normalize, attrs)
+    value_normalization = str(attrs.get("value_normalization", "none")).strip()
+    base_plot_label = attrs.get("base_plot_label", attrs.get("plot_label", attrs.get("field_name", "")))
     stored_limits_raw = _stored_global_limits(attrs)
 
     if print_stats:
@@ -332,8 +334,14 @@ def _apply_normalization(saved, normalize, print_stats=False):
             print(f"Stored global 3D RMS normalization: {float(attrs['global_rms']):.6g}")
 
     if mode == "none":
+        attrs["plot_label"] = format_plot_label(
+            base_plot_label,
+            value_normalization=value_normalization,
+            extra_normalization="none",
+        )
         attrs["normalization"] = "none"
         attrs["normalization_factor"] = 1.0
+        attrs["display_normalization"] = _display_normalization_label(value_normalization, "none")
         if normalize and print_stats:
             print(
                 f"Normalization requested, but field '{attrs.get('field_name', '')}' "
@@ -357,10 +365,15 @@ def _apply_normalization(saved, normalize, print_stats=False):
         reference_scale = U0 / L
         normalization_factor = 1.0 / reference_scale
         values = np.round(values_raw * normalization_factor, decimals=10)
-        attrs["plot_label"] = _star_plot_label(attrs.get("plot_label", attrs.get("field_name", "")))
+        attrs["plot_label"] = format_plot_label(
+            base_plot_label,
+            value_normalization=value_normalization,
+            extra_normalization=mode,
+        )
         attrs["normalization"] = mode
         attrs["normalization_factor"] = normalization_factor
         attrs["normalization_reference_scale"] = reference_scale
+        attrs["display_normalization"] = _display_normalization_label(value_normalization, mode)
         if stored_limits_raw is not None:
             attrs["global_min"] = float(stored_limits_raw[0] * normalization_factor)
             attrs["global_max"] = float(stored_limits_raw[1] * normalization_factor)
@@ -389,10 +402,15 @@ def _apply_normalization(saved, normalize, print_stats=False):
         reference_scale = U0
         normalization_factor = 1.0 / reference_scale
         values = np.round(values_raw * normalization_factor, decimals=10)
-        attrs["plot_label"] = _star_plot_label(attrs.get("plot_label", attrs.get("field_name", "")))
+        attrs["plot_label"] = format_plot_label(
+            base_plot_label,
+            value_normalization=value_normalization,
+            extra_normalization=mode,
+        )
         attrs["normalization"] = mode
         attrs["normalization_factor"] = normalization_factor
         attrs["normalization_reference_scale"] = reference_scale
+        attrs["display_normalization"] = _display_normalization_label(value_normalization, mode)
         if stored_limits_raw is not None:
             attrs["global_min"] = float(stored_limits_raw[0] * normalization_factor)
             attrs["global_max"] = float(stored_limits_raw[1] * normalization_factor)
@@ -661,7 +679,12 @@ def build_comparison_metadata_text(prepared, field_name, slice_tag, normalize, l
     """Return metadata text describing one comparison contour plot."""
     normalization_label = "none"
     if prepared:
-        normalization_label = str(prepared[0]["attrs"].get("normalization", "none"))
+        normalization_label = str(
+            prepared[0]["attrs"].get(
+                "display_normalization",
+                prepared[0]["attrs"].get("normalization", "none"),
+            )
+        )
     if prepared:
         contour_min = min(float(item["stored_limits"][0]) for item in prepared)
         contour_max = max(float(item["stored_limits"][1]) for item in prepared)
@@ -1481,7 +1504,7 @@ def main():
     parser.add_argument(
         "--normalize",
         action="store_true",
-        help="Normalize automatically based on the field family: vorticity uses U0/L and velocity uses U0. Scalar fields are left unchanged.",
+        help="Apply an extra TGV-style normalization on top of the saved slice values: vorticity uses U0/L and velocity uses U0. The colorbar label reflects both the saved normalization and this extra scaling.",
     )
     parser.add_argument(
         "--yt-info",

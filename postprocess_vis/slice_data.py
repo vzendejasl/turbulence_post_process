@@ -122,6 +122,7 @@ def initialize_slice_data_file(
             field_group = slices_group.create_group(field_label)
             field_group.attrs["field_name"] = field_label
             field_group.attrs["source_dataset"] = dataset_name
+            field_group.attrs["base_plot_label"] = latex_label
             field_group.attrs["plot_label"] = latex_label
             field_group.attrs["field_family"] = field_family
 
@@ -138,6 +139,7 @@ def initialize_slice_data_file(
                 slice_group.attrs["vertical_axis"] = vertical_name
                 slice_group.attrs["field_name"] = field_label
                 slice_group.attrs["source_dataset"] = dataset_name
+                slice_group.attrs["base_plot_label"] = latex_label
                 slice_group.attrs["plot_label"] = latex_label
                 slice_group.attrs["field_family"] = field_family
                 slice_group.attrs["step"] = str(meta["step"])
@@ -180,7 +182,15 @@ def write_slice_plane_serial(filepath, field_label, slice_tag, plane):
         hf["slices"][field_label][slice_tag]["values"][:] = np.asarray(plane, dtype=np.float64)
 
 
-def write_slice_stats_serial(filepath, field_label, slice_tag, global_min, global_max, global_rms):
+def write_slice_stats_serial(
+    filepath,
+    field_label,
+    slice_tag,
+    global_min,
+    global_max,
+    global_rms,
+    value_normalization="global_rms",
+):
     """Persist global 3D normalization stats for one saved slice and its parent field."""
     with h5py.File(filepath, "r+") as hf:
         field_group = hf["slices"][field_label]
@@ -188,11 +198,11 @@ def write_slice_stats_serial(filepath, field_label, slice_tag, global_min, globa
         field_group.attrs["global_min"] = float(global_min)
         field_group.attrs["global_max"] = float(global_max)
         field_group.attrs["global_rms"] = float(global_rms)
-        field_group.attrs["value_normalization"] = "global_rms"
+        field_group.attrs["value_normalization"] = str(value_normalization)
         slice_group.attrs["global_min"] = float(global_min)
         slice_group.attrs["global_max"] = float(global_max)
         slice_group.attrs["global_rms"] = float(global_rms)
-        slice_group.attrs["value_normalization"] = "global_rms"
+        slice_group.attrs["value_normalization"] = str(value_normalization)
 
 
 def list_available_slices(filepath):
