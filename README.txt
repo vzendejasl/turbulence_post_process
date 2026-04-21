@@ -194,15 +194,14 @@ Main.py command patterns:
     mpirun -n 96 python main.py your_dedalus_fields_s9.h5 \
       --last-step \
       --skip-fft \
-      --skip-slice \
-      --dedalus-import-x-block-size 1
+      --skip-slice
 
     The Dedalus import reads only /tasks/u into /fields/vx, /fields/vy, and
-    /fields/vz.  For normal HDF5 datasets it streams x-blocks from the input
-    file.  For Dedalus virtual/master HDF5 files, it reads the source p*.h5
-    files directly instead of reading through the virtual dataset.  The option
-    above controls how many x-planes each source read handles at a time; it can
-    also be set with TPP_DEDALUS_IMPORT_X_BLOCK_SIZE.
+    /fields/vz.  The active import path uses the original whole-rank x-slab
+    read, which is the faster path for the lower-rank Tuolumne runs.  The
+    experimental x-block/direct-VDS importer is retained in
+    postprocess_lib/converter.py as commented inactive code for future tuning,
+    but it is not exposed as a command-line option.
 
     The temporary full-field structured HDF5 imported from Dedalus is deleted
     after FFT/slice work finishes by default.  To keep it for reuse or manual

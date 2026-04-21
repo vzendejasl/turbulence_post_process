@@ -120,16 +120,20 @@ Examples:
         action="store_true",
         help="Only process the last write/snapshot from each Dedalus HDF5 file.",
     )
-    parser.add_argument(
-        "--dedalus-import-x-block-size",
-        type=int,
-        default=None,
-        help=(
-            "Number of x-planes per streaming read while importing Dedalus HDF5. "
-            "Defaults to the TPP_DEDALUS_IMPORT_X_BLOCK_SIZE environment variable, "
-            "or 1 when unset."
-        ),
-    )
+    # Experimental Dedalus x-block/VDS-source import is retained in
+    # postprocess_lib.converter for future tuning, but the default runtime path
+    # is back to the original whole-rank slab read.  Keep the CLI option hidden
+    # for now so normal runs do not accidentally opt into the slower path.
+    # parser.add_argument(
+    #     "--dedalus-import-x-block-size",
+    #     type=int,
+    #     default=None,
+    #     help=(
+    #         "Number of x-planes per streaming read while importing Dedalus HDF5. "
+    #         "Defaults to the TPP_DEDALUS_IMPORT_X_BLOCK_SIZE environment variable, "
+    #         "or 1 when unset."
+    #     ),
+    # )
     parser.add_argument(
         "--keep-dedalus-import",
         action="store_true",
@@ -176,7 +180,6 @@ Examples:
             prepared_paths = ensure_all_structured_h5(
                 path,
                 last_only=args.last_step,
-                dedalus_import_x_block_size=args.dedalus_import_x_block_size,
                 include_origin=True,
             )
 

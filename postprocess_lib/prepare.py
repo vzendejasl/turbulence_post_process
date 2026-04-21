@@ -64,7 +64,7 @@ def validate_dedalus_field_h5(path):
         return converter.is_dedalus_field_output_hdf5(hf)
 
 
-def ensure_structured_h5(path, dedalus_import_x_block_size=None):
+def ensure_structured_h5(path):
     """
     Accept either TXT or HDF5 input and return a structured FFT-ready HDF5 path.
 
@@ -97,10 +97,7 @@ def ensure_structured_h5(path, dedalus_import_x_block_size=None):
         dedalus_field_output = validate_dedalus_field_h5(path) if rank == 0 else None
         dedalus_field_output = comm.bcast(dedalus_field_output, root=0)
         if dedalus_field_output:
-            return converter.import_dedalus_snapshot_to_structured_h5(
-                path,
-                x_block_size=dedalus_import_x_block_size,
-            )
+            return converter.import_dedalus_snapshot_to_structured_h5(path)
 
         raise ValueError(
             f"{path} is not a structured FFT-ready HDF5 file or a supported Dedalus field-output HDF5 file."
@@ -109,7 +106,7 @@ def ensure_structured_h5(path, dedalus_import_x_block_size=None):
     raise ValueError(f"Unsupported extension '{ext}'. Expected .txt or .h5.")
 
 
-def ensure_all_structured_h5(path, last_only=False, dedalus_import_x_block_size=None, include_origin=False):
+def ensure_all_structured_h5(path, last_only=False, include_origin=False):
     """Like ensure_structured_h5 but imports all writes from multi-write Dedalus files.
 
     When *last_only* is True, only the last write from each Dedalus file is
@@ -160,17 +157,11 @@ def ensure_all_structured_h5(path, last_only=False, dedalus_import_x_block_size=
         dedalus_field_output = comm.bcast(dedalus_field_output, root=0)
         if dedalus_field_output:
             if last_only:
-                output = converter.import_dedalus_snapshot_to_structured_h5(
-                    path,
-                    x_block_size=dedalus_import_x_block_size,
-                )
+                output = converter.import_dedalus_snapshot_to_structured_h5(path)
                 if include_origin:
                     return [(output, True)]
                 return [output]
-            outputs = converter.import_all_dedalus_snapshots_to_structured_h5(
-                path,
-                x_block_size=dedalus_import_x_block_size,
-            )
+            outputs = converter.import_all_dedalus_snapshots_to_structured_h5(path)
             if include_origin:
                 return [(output, True) for output in outputs]
             return outputs

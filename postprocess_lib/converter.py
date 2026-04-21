@@ -759,6 +759,14 @@ def write_structured_h5(
         )
 
 
+# Future import path retained but inactive.
+#
+# These helpers stream Dedalus data in smaller x-blocks, including an
+# experimental path that reads Dedalus VDS source p*.h5 files directly.  They
+# reduced per-read memory pressure, but were much slower for the current
+# lower-rank Tuolumne workflow.  The active importer below intentionally uses
+# the original whole-rank slab read again.  Re-enable this block only if the
+# high-rank import path is worth tuning further.
 def stream_dedalus_snapshot_to_structured_h5(
     input_path,
     output_path,
@@ -932,7 +940,7 @@ def stream_dedalus_vds_sources_to_structured_h5(
     return running_sum_sq, local_rows
 
 
-def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write_index=-1, x_block_size=None):
+def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write_index=-1):
     """Import one Dedalus velocity snapshot into the structured FFT-ready HDF5 schema."""
     snapshot_info = comm.bcast(
         dedalus_snapshot_info(input_path, write_index=write_index) if rank == 0 else None,
@@ -948,8 +956,6 @@ def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write
     nx = snapshot_info["shape"][0]
     x_ranges = split_axis(nx, size)
     x_start, x_stop = x_ranges[rank]
-    x_block_size = resolve_dedalus_import_x_block_size(x_block_size)
-    vds_mappings = bcast_dedalus_vds_source_mappings(input_path)
 
     if rank == 0:
         print(f"\nProcessing: {input_path}")
@@ -961,23 +967,71 @@ def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write
         if snapshot_info["cycle"] is not None:
             print(f"  Cycle: {snapshot_info['cycle']}")
         if h5py.get_config().mpi:
-            if vds_mappings:
-                print(
-                    "  Detected virtual Dedalus velocity task; "
-                    f"reading {len(vds_mappings)} source mappings directly."
-                )
-                print(f"  Source-file streaming x-block size: {x_block_size}")
-            else:
-                print(
-                    "  Streaming Dedalus velocity task into structured HDF5 "
-                    f"with x-block size {x_block_size}..."
-                )
+            print("  Reading Dedalus velocity task with independent serial HDF5 reads on each rank...")
         else:
             print("  Reading Dedalus velocity task with independent serial HDF5 reads on each rank...")
 
-    if h5py.get_config().mpi:
+    with open_h5_for_independent_read(input_path) as hf:
+        u_task = hf["tasks"]["u"]
+        local_vx = np.asarray(
+            u_task[snapshot_info["selected_index"], 0, x_start:x_stop, :, :],
+            dtype=np.float64,
+        )
+        local_vy = np.asarray(
+            u_task[snapshot_info["selected_index"], 1, x_start:x_stop, :, :],
+            dtype=np.float64,
+        )
+        local_vz = np.asarray(
+            u_task[snapshot_info["selected_index"], 2, x_start:x_stop, :, :],
+            dtype=np.float64,
+        )
+
+    running_sum_sq = np.sum(local_vx**2 + local_vy**2 + local_vz**2, dtype=np.float64)
+    local_rows = int(local_vx.size)
+
+    if rank == 0:
+        if h5py.get_config().mpi:
+            print("  Writing structured HDF5 in parallel...")
+        else:
+            print("  h5py MPI support is unavailable; falling back to serial HDF5 assembly on rank 0...")
+
+    write_structured_h5(
+        output_path,
+        x_unique,
+        y_unique,
+        z_unique,
+        (x_start, x_stop),
+        local_vx,
+        local_vy,
+        local_vz,
+        dedalus_header_lines(input_path, snapshot_info),
+        step_number=(
+            str(snapshot_info["cycle"])
+            if snapshot_info["cycle"] is not None
+            else str(snapshot_info["write_number"])
+        ),
+        time_value=float(snapshot_info["sim_time"]),
+        periodic_duplicate_last=False,
+        extra_attrs={
+            "source_format": "dedalus_field_output_v1",
+            "source_file": os.path.abspath(input_path),
+            "source_write_index": int(snapshot_info["selected_index"]),
+            "source_write_number": int(snapshot_info["write_number"]),
+            "source_cycle": int(snapshot_info["cycle"]) if snapshot_info["cycle"] is not None else -1,
+            "source_handler_name": snapshot_info["handler_name"],
+            "source_set_number": int(snapshot_info["set_number"]),
+            "dedalus_import_mode": "whole_rank_slab",
+        },
+    )
+    del local_vx, local_vy, local_vz
+
+    # Disabled x-block/direct-VDS importer.  Kept here as a ready reference if
+    # high-rank imports need more memory work later.
+    if False:
         if rank == 0:
             print("  Writing structured HDF5 in parallel as blocks are read...")
+        x_block_size = resolve_dedalus_import_x_block_size(None)
+        vds_mappings = bcast_dedalus_vds_source_mappings(input_path)
         if vds_mappings:
             running_sum_sq, local_rows = stream_dedalus_vds_sources_to_structured_h5(
                 output_path,
@@ -1024,57 +1078,6 @@ def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write
                 },
             )
         comm.Barrier()
-    else:
-        with open_h5_for_independent_read(input_path) as hf:
-            u_task = hf["tasks"]["u"]
-            local_vx = np.asarray(
-                u_task[snapshot_info["selected_index"], 0, x_start:x_stop, :, :],
-                dtype=np.float64,
-            )
-            local_vy = np.asarray(
-                u_task[snapshot_info["selected_index"], 1, x_start:x_stop, :, :],
-                dtype=np.float64,
-            )
-            local_vz = np.asarray(
-                u_task[snapshot_info["selected_index"], 2, x_start:x_stop, :, :],
-                dtype=np.float64,
-            )
-
-        running_sum_sq = np.sum(local_vx**2 + local_vy**2 + local_vz**2, dtype=np.float64)
-        local_rows = int(local_vx.size)
-
-        if rank == 0:
-            print("  h5py MPI support is unavailable; falling back to serial HDF5 assembly on rank 0...")
-
-        write_structured_h5(
-            output_path,
-            x_unique,
-            y_unique,
-            z_unique,
-            (x_start, x_stop),
-            local_vx,
-            local_vy,
-            local_vz,
-            dedalus_header_lines(input_path, snapshot_info),
-            step_number=(
-                str(snapshot_info["cycle"])
-                if snapshot_info["cycle"] is not None
-                else str(snapshot_info["write_number"])
-            ),
-            time_value=float(snapshot_info["sim_time"]),
-            periodic_duplicate_last=False,
-            extra_attrs={
-                "source_format": "dedalus_field_output_v1",
-                "source_file": os.path.abspath(input_path),
-                "source_write_index": int(snapshot_info["selected_index"]),
-                "source_write_number": int(snapshot_info["write_number"]),
-                "source_cycle": int(snapshot_info["cycle"]) if snapshot_info["cycle"] is not None else -1,
-                "source_handler_name": snapshot_info["handler_name"],
-                "source_set_number": int(snapshot_info["set_number"]),
-                "dedalus_import_mode": "whole_rank_slab",
-            },
-        )
-        del local_vx, local_vy, local_vz
 
     global_points = int(np.prod(snapshot_info["shape"]))
     global_sum_sq = comm.reduce(running_sum_sq, op=MPI.SUM, root=0)
@@ -1120,7 +1123,7 @@ def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write
     return output_path
 
 
-def import_all_dedalus_snapshots_to_structured_h5(input_path, x_block_size=None):
+def import_all_dedalus_snapshots_to_structured_h5(input_path):
     """Import all writes from a multi-write Dedalus field-output file.
 
     Returns a list of structured HDF5 paths, one per write.
@@ -1139,7 +1142,6 @@ def import_all_dedalus_snapshots_to_structured_h5(input_path, x_block_size=None)
         output_path = import_dedalus_snapshot_to_structured_h5(
             input_path,
             write_index=write_idx,
-            x_block_size=x_block_size,
         )
         output_paths.append(output_path)
 
