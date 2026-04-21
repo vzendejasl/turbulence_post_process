@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from mpi4py import rc
@@ -129,6 +130,15 @@ Examples:
             "or 1 when unset."
         ),
     )
+    parser.add_argument(
+        "--keep-dedalus-import",
+        action="store_true",
+        help=(
+            "Keep structured HDF5 files imported from Dedalus after this run. "
+            "By default, imported Dedalus structured HDF5 files are deleted "
+            "after FFT/slice processing finishes."
+        ),
+    )
     args = parser.parse_args()
 
     comm = MPI.COMM_WORLD
@@ -167,9 +177,11 @@ Examples:
                 path,
                 last_only=args.last_step,
                 dedalus_import_x_block_size=args.dedalus_import_x_block_size,
+                include_origin=True,
             )
 
-            for write_idx, prepared_path in enumerate(prepared_paths):
+            for write_idx, prepared_item in enumerate(prepared_paths):
+                prepared_path, imported_from_dedalus = prepared_item
                 if rank == 0:
                     if len(prepared_paths) > 1:
                         print()
@@ -242,6 +254,18 @@ Examples:
                         slice_outputs.extend(rendered)
                         if slice_data_path is not None:
                             slice_data_outputs.append(slice_data_path)
+
+                if imported_from_dedalus and not args.keep_dedalus_import:
+                    comm.Barrier()
+                    if rank == 0:
+                        try:
+                            os.remove(prepared_path)
+                            print(f"Deleted imported Dedalus structured HDF5: {prepared_path}")
+                        except FileNotFoundError:
+                            print(f"Imported Dedalus structured HDF5 already absent: {prepared_path}")
+                        except OSError as exc:
+                            print(f"Warning: could not delete imported Dedalus structured HDF5 {prepared_path}: {exc}")
+                    comm.Barrier()
         except Exception as exc:
             if rank == 0:
                 print(f"  CRITICAL ERROR processing {path}: {exc}")

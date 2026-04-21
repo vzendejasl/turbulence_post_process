@@ -204,6 +204,16 @@ Main.py command patterns:
     above controls how many x-planes each source read handles at a time; it can
     also be set with TPP_DEDALUS_IMPORT_X_BLOCK_SIZE.
 
+    The temporary full-field structured HDF5 imported from Dedalus is deleted
+    after FFT/slice work finishes by default.  To keep it for reuse or manual
+    inspection, add:
+      --keep-dedalus-import
+
+    The default cleanup only deletes structured HDF5 files imported from
+    Dedalus during the current run.  It does not delete TXT conversions,
+    pre-existing structured HDF5 inputs, spectra outputs, Q-R PDF outputs,
+    slice plots, or slice-data files.
+
   Basic TXT input:
     mpirun -n 4 python main.py your_velocity_data.txt
 
