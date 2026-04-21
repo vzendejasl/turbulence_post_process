@@ -119,6 +119,16 @@ Examples:
         action="store_true",
         help="Only process the last write/snapshot from each Dedalus HDF5 file.",
     )
+    parser.add_argument(
+        "--dedalus-import-x-block-size",
+        type=int,
+        default=None,
+        help=(
+            "Number of x-planes per streaming read while importing Dedalus HDF5. "
+            "Defaults to the TPP_DEDALUS_IMPORT_X_BLOCK_SIZE environment variable, "
+            "or 1 when unset."
+        ),
+    )
     args = parser.parse_args()
 
     comm = MPI.COMM_WORLD
@@ -153,7 +163,11 @@ Examples:
                 print(f"FILE {idx + 1}/{len(args.data_files)}")
                 print("=" * 72)
                 print(f"Input: {path}")
-            prepared_paths = ensure_all_structured_h5(path, last_only=args.last_step)
+            prepared_paths = ensure_all_structured_h5(
+                path,
+                last_only=args.last_step,
+                dedalus_import_x_block_size=args.dedalus_import_x_block_size,
+            )
 
             for write_idx, prepared_path in enumerate(prepared_paths):
                 if rank == 0:

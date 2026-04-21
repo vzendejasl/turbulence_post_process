@@ -36,6 +36,31 @@ rank = comm.Get_rank()
 size = comm.Get_size()
 
 CHUNK_SIZE = 1_000_000
+DEFAULT_DEDALUS_IMPORT_X_BLOCK_SIZE = 1
+DEDALUS_IMPORT_X_BLOCK_SIZE_ENV = "TPP_DEDALUS_IMPORT_X_BLOCK_SIZE"
+
+
+def resolve_dedalus_import_x_block_size(x_block_size=None):
+    """Return the number of x-planes to stream per Dedalus import read."""
+    if x_block_size is None:
+        value = os.environ.get(DEDALUS_IMPORT_X_BLOCK_SIZE_ENV, DEFAULT_DEDALUS_IMPORT_X_BLOCK_SIZE)
+    else:
+        value = x_block_size
+
+    try:
+        block_size = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid Dedalus import x-block size {value!r}. "
+            "Expected a positive integer."
+        ) from exc
+
+    if block_size < 1:
+        raise ValueError(
+            f"Invalid Dedalus import x-block size {block_size}. "
+            "Expected a positive integer."
+        )
+    return block_size
 
 
 def split_axis(length, parts):
@@ -581,6 +606,74 @@ def redistribute_to_xslabs(txt_path, chunk_index, x_unique, y_unique, z_unique, 
     return (x_start, x_stop), local_vx, local_vy, local_vz, running_sum_sq
 
 
+def write_structured_h5_metadata(
+    h5_path,
+    x_unique,
+    y_unique,
+    z_unique,
+    header_lines,
+    *,
+    step_number=None,
+    time_value=None,
+    periodic_duplicate_last=True,
+    extra_attrs=None,
+):
+    """Write shared grid/header metadata for the structured velocity schema."""
+    global_shape = (len(x_unique), len(y_unique), len(z_unique))
+    if step_number is None or time_value is None:
+        parsed_step, parsed_time = parse_header_metadata(header_lines)
+        if step_number is None:
+            step_number = parsed_step
+        if time_value is None:
+            time_value = parsed_time
+
+    with h5py.File(h5_path, "a") as hf:
+        if "grid" in hf:
+            del hf["grid"]
+        if "header" in hf:
+            del hf["header"]
+
+        grid = hf.create_group("grid")
+        grid.create_dataset("x", data=x_unique)
+        grid.create_dataset("y", data=y_unique)
+        grid.create_dataset("z", data=z_unique)
+
+        dt = h5py.string_dtype(encoding="utf-8")
+        hf.create_dataset(
+            "header",
+            data=np.array([str(line) for line in header_lines], dtype=object),
+            dtype=dt,
+        )
+
+        hf.attrs["schema"] = "structured_velocity_v1"
+        hf.attrs["periodic_duplicate_last"] = bool(periodic_duplicate_last)
+        hf.attrs["Nx"] = int(global_shape[0])
+        hf.attrs["Ny"] = int(global_shape[1])
+        hf.attrs["Nz"] = int(global_shape[2])
+        if periodic_duplicate_last:
+            hf.attrs["fft_nx"] = int(max(global_shape[0] - 1, 1))
+            hf.attrs["fft_ny"] = int(max(global_shape[1] - 1, 1))
+            hf.attrs["fft_nz"] = int(max(global_shape[2] - 1, 1))
+        else:
+            hf.attrs["fft_nx"] = int(global_shape[0])
+            hf.attrs["fft_ny"] = int(global_shape[1])
+            hf.attrs["fft_nz"] = int(global_shape[2])
+        hf.attrs["dx"] = float(x_unique[1] - x_unique[0]) if len(x_unique) > 1 else 1.0
+        hf.attrs["dy"] = float(y_unique[1] - y_unique[0]) if len(y_unique) > 1 else 1.0
+        hf.attrs["dz"] = float(z_unique[1] - z_unique[0]) if len(z_unique) > 1 else 1.0
+        hf.attrs["xmin"] = float(x_unique[0])
+        hf.attrs["xmax"] = float(x_unique[-1])
+        hf.attrs["ymin"] = float(y_unique[0])
+        hf.attrs["ymax"] = float(y_unique[-1])
+        hf.attrs["zmin"] = float(z_unique[0])
+        hf.attrs["zmax"] = float(z_unique[-1])
+        hf.attrs["step"] = step_number
+        hf.attrs["time"] = float(time_value)
+        if extra_attrs:
+            for key, value in extra_attrs.items():
+                hf.attrs[key] = value
+
+
 def write_structured_h5(
     h5_path,
     x_unique,
@@ -635,55 +728,73 @@ def write_structured_h5(
     comm.Barrier()
 
     if rank == 0:
-        if step_number is None or time_value is None:
-            parsed_step, parsed_time = parse_header_metadata(header_lines)
-            if step_number is None:
-                step_number = parsed_step
-            if time_value is None:
-                time_value = parsed_time
-        with h5py.File(h5_path, "a") as hf:
-            grid = hf.create_group("grid")
-            grid.create_dataset("x", data=x_unique)
-            grid.create_dataset("y", data=y_unique)
-            grid.create_dataset("z", data=z_unique)
-
-            dt = h5py.string_dtype(encoding="utf-8")
-            hf.create_dataset(
-                "header",
-                data=np.array([str(line) for line in header_lines], dtype=object),
-                dtype=dt,
-            )
-
-            hf.attrs["schema"] = "structured_velocity_v1"
-            hf.attrs["periodic_duplicate_last"] = bool(periodic_duplicate_last)
-            hf.attrs["Nx"] = int(global_shape[0])
-            hf.attrs["Ny"] = int(global_shape[1])
-            hf.attrs["Nz"] = int(global_shape[2])
-            if periodic_duplicate_last:
-                hf.attrs["fft_nx"] = int(max(global_shape[0] - 1, 1))
-                hf.attrs["fft_ny"] = int(max(global_shape[1] - 1, 1))
-                hf.attrs["fft_nz"] = int(max(global_shape[2] - 1, 1))
-            else:
-                hf.attrs["fft_nx"] = int(global_shape[0])
-                hf.attrs["fft_ny"] = int(global_shape[1])
-                hf.attrs["fft_nz"] = int(global_shape[2])
-            hf.attrs["dx"] = float(x_unique[1] - x_unique[0]) if len(x_unique) > 1 else 1.0
-            hf.attrs["dy"] = float(y_unique[1] - y_unique[0]) if len(y_unique) > 1 else 1.0
-            hf.attrs["dz"] = float(z_unique[1] - z_unique[0]) if len(z_unique) > 1 else 1.0
-            hf.attrs["xmin"] = float(x_unique[0])
-            hf.attrs["xmax"] = float(x_unique[-1])
-            hf.attrs["ymin"] = float(y_unique[0])
-            hf.attrs["ymax"] = float(y_unique[-1])
-            hf.attrs["zmin"] = float(z_unique[0])
-            hf.attrs["zmax"] = float(z_unique[-1])
-            hf.attrs["step"] = step_number
-            hf.attrs["time"] = float(time_value)
-            if extra_attrs:
-                for key, value in extra_attrs.items():
-                    hf.attrs[key] = value
+        write_structured_h5_metadata(
+            h5_path,
+            x_unique,
+            y_unique,
+            z_unique,
+            header_lines,
+            step_number=step_number,
+            time_value=time_value,
+            periodic_duplicate_last=periodic_duplicate_last,
+            extra_attrs=extra_attrs,
+        )
 
 
-def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write_index=-1):
+def stream_dedalus_snapshot_to_structured_h5(
+    input_path,
+    output_path,
+    snapshot_info,
+    x_start,
+    x_stop,
+    x_block_size,
+):
+    """Stream one Dedalus velocity snapshot into the structured schema."""
+    global_shape = snapshot_info["shape"]
+    selected = snapshot_info["selected_index"]
+    running_sum_sq = 0.0
+    local_rows = 0
+
+    if rank == 0 and os.path.exists(output_path):
+        os.remove(output_path)
+    comm.Barrier()
+
+    with h5py.File(output_path, "w", driver="mpio", comm=comm) as out_hf:
+        fields = out_hf.create_group("fields")
+        output_dsets = (
+            fields.create_dataset("vx", shape=global_shape, dtype="float64"),
+            fields.create_dataset("vy", shape=global_shape, dtype="float64"),
+            fields.create_dataset("vz", shape=global_shape, dtype="float64"),
+        )
+
+        with open_h5_for_independent_read(input_path) as in_hf:
+            u_task = in_hf["tasks"]["u"]
+            ny, nz = global_shape[1], global_shape[2]
+
+            for block_start in range(x_start, x_stop, x_block_size):
+                block_stop = min(block_start + x_block_size, x_stop)
+                block_nx = block_stop - block_start
+                if block_nx <= 0:
+                    continue
+
+                buffer = np.empty((1, 1, block_nx, ny, nz), dtype=np.float64)
+                output_slab = np.s_[block_start:block_stop, :, :]
+                for component, output_dset in enumerate(output_dsets):
+                    u_task.read_direct(
+                        buffer,
+                        source_sel=np.s_[selected:selected + 1, component:component + 1, block_start:block_stop, :, :],
+                    )
+                    block_values = buffer[0, 0]
+                    output_dset[output_slab] = block_values
+                    running_sum_sq += np.sum(block_values**2, dtype=np.float64)
+
+                local_rows += block_nx * ny * nz
+
+    comm.Barrier()
+    return running_sum_sq, local_rows
+
+
+def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write_index=-1, x_block_size=None):
     """Import one Dedalus velocity snapshot into the structured FFT-ready HDF5 schema."""
     snapshot_info = comm.bcast(
         dedalus_snapshot_info(input_path, write_index=write_index) if rank == 0 else None,
@@ -699,6 +810,7 @@ def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write
     nx = snapshot_info["shape"][0]
     x_ranges = split_axis(nx, size)
     x_start, x_stop = x_ranges[rank]
+    x_block_size = resolve_dedalus_import_x_block_size(x_block_size)
 
     if rank == 0:
         print(f"\nProcessing: {input_path}")
@@ -709,59 +821,115 @@ def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write
         )
         if snapshot_info["cycle"] is not None:
             print(f"  Cycle: {snapshot_info['cycle']}")
-        print("  Reading Dedalus velocity task with independent serial HDF5 reads on each rank...")
-
-    with open_h5_for_independent_read(input_path) as hf:
-        u_task = hf["tasks"]["u"]
-        local_vx = np.asarray(
-            u_task[snapshot_info["selected_index"], 0, x_start:x_stop, :, :],
-            dtype=np.float64,
-        )
-        local_vy = np.asarray(
-            u_task[snapshot_info["selected_index"], 1, x_start:x_stop, :, :],
-            dtype=np.float64,
-        )
-        local_vz = np.asarray(
-            u_task[snapshot_info["selected_index"], 2, x_start:x_stop, :, :],
-            dtype=np.float64,
-        )
-
-    running_sum_sq = np.sum(local_vx**2 + local_vy**2 + local_vz**2, dtype=np.float64)
-    global_points = int(np.prod(snapshot_info["shape"]))
-    global_sum_sq = comm.reduce(running_sum_sq, op=MPI.SUM, root=0)
-
-    if rank == 0:
         if h5py.get_config().mpi:
-            print("  Writing structured HDF5 in parallel...")
+            print(
+                "  Streaming Dedalus velocity task into structured HDF5 "
+                f"with x-block size {x_block_size}..."
+            )
         else:
+            print("  Reading Dedalus velocity task with independent serial HDF5 reads on each rank...")
+
+    if h5py.get_config().mpi:
+        if rank == 0:
+            print("  Writing structured HDF5 in parallel as blocks are read...")
+        running_sum_sq, local_rows = stream_dedalus_snapshot_to_structured_h5(
+            input_path,
+            output_path,
+            snapshot_info,
+            x_start,
+            x_stop,
+            x_block_size,
+        )
+        if rank == 0:
+            write_structured_h5_metadata(
+                output_path,
+                x_unique,
+                y_unique,
+                z_unique,
+                dedalus_header_lines(input_path, snapshot_info),
+                step_number=(
+                    str(snapshot_info["cycle"])
+                    if snapshot_info["cycle"] is not None
+                    else str(snapshot_info["write_number"])
+                ),
+                time_value=float(snapshot_info["sim_time"]),
+                periodic_duplicate_last=False,
+                extra_attrs={
+                    "source_format": "dedalus_field_output_v1",
+                    "source_file": os.path.abspath(input_path),
+                    "source_write_index": int(snapshot_info["selected_index"]),
+                    "source_write_number": int(snapshot_info["write_number"]),
+                    "source_cycle": int(snapshot_info["cycle"]) if snapshot_info["cycle"] is not None else -1,
+                    "source_handler_name": snapshot_info["handler_name"],
+                    "source_set_number": int(snapshot_info["set_number"]),
+                    "dedalus_import_x_block_size": int(x_block_size),
+                    "dedalus_import_mode": "streamed_read_direct",
+                },
+            )
+        comm.Barrier()
+    else:
+        with open_h5_for_independent_read(input_path) as hf:
+            u_task = hf["tasks"]["u"]
+            local_vx = np.asarray(
+                u_task[snapshot_info["selected_index"], 0, x_start:x_stop, :, :],
+                dtype=np.float64,
+            )
+            local_vy = np.asarray(
+                u_task[snapshot_info["selected_index"], 1, x_start:x_stop, :, :],
+                dtype=np.float64,
+            )
+            local_vz = np.asarray(
+                u_task[snapshot_info["selected_index"], 2, x_start:x_stop, :, :],
+                dtype=np.float64,
+            )
+
+        running_sum_sq = np.sum(local_vx**2 + local_vy**2 + local_vz**2, dtype=np.float64)
+        local_rows = int(local_vx.size)
+
+        if rank == 0:
             print("  h5py MPI support is unavailable; falling back to serial HDF5 assembly on rank 0...")
 
-    write_structured_h5(
-        output_path,
-        x_unique,
-        y_unique,
-        z_unique,
-        (x_start, x_stop),
-        local_vx,
-        local_vy,
-        local_vz,
-        dedalus_header_lines(input_path, snapshot_info),
-        step_number=str(snapshot_info["cycle"]) if snapshot_info["cycle"] is not None else str(snapshot_info["write_number"]),
-        time_value=float(snapshot_info["sim_time"]),
-        periodic_duplicate_last=False,
-        extra_attrs={
-            "source_format": "dedalus_field_output_v1",
-            "source_file": os.path.abspath(input_path),
-            "source_write_index": int(snapshot_info["selected_index"]),
-            "source_write_number": int(snapshot_info["write_number"]),
-            "source_cycle": int(snapshot_info["cycle"]) if snapshot_info["cycle"] is not None else -1,
-            "source_handler_name": snapshot_info["handler_name"],
-            "source_set_number": int(snapshot_info["set_number"]),
-        },
-    )
+        write_structured_h5(
+            output_path,
+            x_unique,
+            y_unique,
+            z_unique,
+            (x_start, x_stop),
+            local_vx,
+            local_vy,
+            local_vz,
+            dedalus_header_lines(input_path, snapshot_info),
+            step_number=(
+                str(snapshot_info["cycle"])
+                if snapshot_info["cycle"] is not None
+                else str(snapshot_info["write_number"])
+            ),
+            time_value=float(snapshot_info["sim_time"]),
+            periodic_duplicate_last=False,
+            extra_attrs={
+                "source_format": "dedalus_field_output_v1",
+                "source_file": os.path.abspath(input_path),
+                "source_write_index": int(snapshot_info["selected_index"]),
+                "source_write_number": int(snapshot_info["write_number"]),
+                "source_cycle": int(snapshot_info["cycle"]) if snapshot_info["cycle"] is not None else -1,
+                "source_handler_name": snapshot_info["handler_name"],
+                "source_set_number": int(snapshot_info["set_number"]),
+                "dedalus_import_mode": "whole_rank_slab",
+            },
+        )
+        del local_vx, local_vy, local_vz
+
+    global_points = int(np.prod(snapshot_info["shape"]))
+    global_sum_sq = comm.reduce(running_sum_sq, op=MPI.SUM, root=0)
+    total_rows = comm.reduce(local_rows, op=MPI.SUM, root=0)
 
     output_tke = None
     if rank == 0:
+        if total_rows != global_points:
+            raise RuntimeError(
+                "Dedalus snapshot import wrote an unexpected number of rows: "
+                f"expected {global_points}, wrote {total_rows}."
+            )
         output_tke = 0.5 * (global_sum_sq / global_points)
         print(f"  Import complete. Total grid points: {global_points}")
     output_tke = comm.bcast(output_tke, root=0)
@@ -795,7 +963,7 @@ def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write
     return output_path
 
 
-def import_all_dedalus_snapshots_to_structured_h5(input_path):
+def import_all_dedalus_snapshots_to_structured_h5(input_path, x_block_size=None):
     """Import all writes from a multi-write Dedalus field-output file.
 
     Returns a list of structured HDF5 paths, one per write.
@@ -811,7 +979,11 @@ def import_all_dedalus_snapshots_to_structured_h5(input_path):
 
     output_paths = []
     for write_idx in range(num_writes):
-        output_path = import_dedalus_snapshot_to_structured_h5(input_path, write_index=write_idx)
+        output_path = import_dedalus_snapshot_to_structured_h5(
+            input_path,
+            write_index=write_idx,
+            x_block_size=x_block_size,
+        )
         output_paths.append(output_path)
 
     return output_paths
@@ -1331,12 +1503,19 @@ def calculate_file_tke_parallel(file_path):
                     vz_dset = hf["fields"]["vz"]
                     x_ranges = split_axis(vx_dset.shape[0], size)
                     x_start, x_stop = x_ranges[rank]
-                    if x_stop > x_start:
-                        vx = np.asarray(vx_dset[x_start:x_stop, :, :], dtype=np.float64)
-                        vy = np.asarray(vy_dset[x_start:x_stop, :, :], dtype=np.float64)
-                        vz = np.asarray(vz_dset[x_start:x_stop, :, :], dtype=np.float64)
-                        running_sum_sq += np.sum(vx**2 + vy**2 + vz**2, dtype=np.float64)
-                        local_rows += vx.size
+                    ny, nz = vx_dset.shape[1], vx_dset.shape[2]
+                    x_block = max(1, CHUNK_SIZE // max(ny * nz, 1))
+                    for block_start in range(x_start, x_stop, x_block):
+                        block_stop = min(block_start + x_block, x_stop)
+                        block_shape = (block_stop - block_start, ny, nz)
+                        buffer = np.empty(block_shape, dtype=np.float64)
+                        block_sum_sq = 0.0
+                        source_sel = np.s_[block_start:block_stop, :, :]
+                        for dset in (vx_dset, vy_dset, vz_dset):
+                            dset.read_direct(buffer, source_sel=source_sel)
+                            block_sum_sq += np.sum(buffer**2, dtype=np.float64)
+                        running_sum_sq += block_sum_sq
+                        local_rows += buffer.size
                 else:
                     raise ValueError("No recognized velocity dataset in HDF5 file.")
         else:

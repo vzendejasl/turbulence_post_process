@@ -190,6 +190,17 @@ Main.py command patterns:
   Dedalus field-output HDF5 input:
     mpirun -n 4 python main.py your_dedalus_fields_s2.h5
 
+  Import a large Dedalus field-output HDF5 file without running FFT or slices:
+    mpirun -n 96 python main.py your_dedalus_fields_s9.h5 \
+      --last-step \
+      --skip-fft \
+      --skip-slice \
+      --dedalus-import-x-block-size 1
+
+    The Dedalus import reads /tasks/u in streaming x-blocks.  The command-line
+    option above controls how many x-planes each rank reads at a time; it can
+    also be set with TPP_DEDALUS_IMPORT_X_BLOCK_SIZE.
+
   Basic TXT input:
     mpirun -n 4 python main.py your_velocity_data.txt
 

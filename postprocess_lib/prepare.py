@@ -64,7 +64,7 @@ def validate_dedalus_field_h5(path):
         return converter.is_dedalus_field_output_hdf5(hf)
 
 
-def ensure_structured_h5(path):
+def ensure_structured_h5(path, dedalus_import_x_block_size=None):
     """
     Accept either TXT or HDF5 input and return a structured FFT-ready HDF5 path.
 
@@ -97,7 +97,10 @@ def ensure_structured_h5(path):
         dedalus_field_output = validate_dedalus_field_h5(path) if rank == 0 else None
         dedalus_field_output = comm.bcast(dedalus_field_output, root=0)
         if dedalus_field_output:
-            return converter.import_dedalus_snapshot_to_structured_h5(path)
+            return converter.import_dedalus_snapshot_to_structured_h5(
+                path,
+                x_block_size=dedalus_import_x_block_size,
+            )
 
         raise ValueError(
             f"{path} is not a structured FFT-ready HDF5 file or a supported Dedalus field-output HDF5 file."
@@ -106,7 +109,7 @@ def ensure_structured_h5(path):
     raise ValueError(f"Unsupported extension '{ext}'. Expected .txt or .h5.")
 
 
-def ensure_all_structured_h5(path, last_only=False):
+def ensure_all_structured_h5(path, last_only=False, dedalus_import_x_block_size=None):
     """Like ensure_structured_h5 but imports all writes from multi-write Dedalus files.
 
     When *last_only* is True, only the last write from each Dedalus file is
@@ -152,8 +155,16 @@ def ensure_all_structured_h5(path, last_only=False):
         dedalus_field_output = comm.bcast(dedalus_field_output, root=0)
         if dedalus_field_output:
             if last_only:
-                return [converter.import_dedalus_snapshot_to_structured_h5(path)]
-            return converter.import_all_dedalus_snapshots_to_structured_h5(path)
+                return [
+                    converter.import_dedalus_snapshot_to_structured_h5(
+                        path,
+                        x_block_size=dedalus_import_x_block_size,
+                    )
+                ]
+            return converter.import_all_dedalus_snapshots_to_structured_h5(
+                path,
+                x_block_size=dedalus_import_x_block_size,
+            )
 
         raise ValueError(
             f"{path} is not a structured FFT-ready HDF5 file "
