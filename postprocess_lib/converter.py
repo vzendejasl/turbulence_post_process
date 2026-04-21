@@ -38,6 +38,7 @@ size = comm.Get_size()
 CHUNK_SIZE = 1_000_000
 DEFAULT_DEDALUS_IMPORT_X_BLOCK_SIZE = 1
 DEDALUS_IMPORT_X_BLOCK_SIZE_ENV = "TPP_DEDALUS_IMPORT_X_BLOCK_SIZE"
+UINT64_MAX = (1 << 64) - 1
 
 
 def resolve_dedalus_import_x_block_size(x_block_size=None):
@@ -61,6 +62,23 @@ def resolve_dedalus_import_x_block_size(x_block_size=None):
             "Expected a positive integer."
         )
     return block_size
+
+
+def regular_hyperslab_geometry(space):
+    """Return integer start and span for a regular HDF5 hyperslab selection."""
+    start, stride, count, block = space.get_regular_hyperslab()
+    start = tuple(int(value) for value in start)
+    stride = tuple(int(value) for value in stride)
+    count = tuple(int(value) for value in count)
+    block = tuple(int(value) for value in block)
+
+    span = []
+    for stride_i, count_i, block_i in zip(stride, count, block):
+        if count_i == UINT64_MAX:
+            span.append(block_i)
+        else:
+            span.append((count_i - 1) * stride_i + block_i)
+    return start, tuple(span)
 
 
 def split_axis(length, parts):
@@ -794,6 +812,126 @@ def stream_dedalus_snapshot_to_structured_h5(
     return running_sum_sq, local_rows
 
 
+def dedalus_vds_source_mappings(input_path):
+    """Return direct source-file mappings for a virtual Dedalus velocity task."""
+    with h5py.File(input_path, "r") as hf:
+        u_task = hf["tasks"]["u"]
+        if not u_task.is_virtual:
+            return None
+
+        base_dir = os.path.dirname(os.path.abspath(input_path))
+        mappings = []
+        for source in u_task.virtual_sources():
+            if source.dset_name != "tasks/u":
+                continue
+            if not source.src_space.is_regular_hyperslab() or not source.vspace.is_regular_hyperslab():
+                raise ValueError(
+                    "Dedalus VDS source mapping is not a regular hyperslab; "
+                    "cannot safely import it directly."
+                )
+            src_start, src_span = regular_hyperslab_geometry(source.src_space)
+            vds_start, vds_span = regular_hyperslab_geometry(source.vspace)
+            mappings.append(
+                {
+                    "file_name": os.path.join(base_dir, source.file_name),
+                    "dset_name": source.dset_name,
+                    "src_start": src_start,
+                    "src_span": src_span,
+                    "vds_start": vds_start,
+                    "vds_span": vds_span,
+                }
+            )
+
+    return mappings
+
+
+def bcast_dedalus_vds_source_mappings(input_path):
+    """Broadcast VDS mapping discovery, raising discovery errors on every rank."""
+    payload = None
+    if rank == 0:
+        try:
+            payload = (dedalus_vds_source_mappings(input_path), None)
+        except Exception as exc:
+            payload = (None, repr(exc))
+    mappings, error = comm.bcast(payload, root=0)
+    if error is not None:
+        raise ValueError(f"Failed to inspect Dedalus VDS source mappings: {error}")
+    return mappings
+
+
+def stream_dedalus_vds_sources_to_structured_h5(
+    output_path,
+    snapshot_info,
+    mappings,
+    x_block_size,
+):
+    """Import a Dedalus virtual dataset by reading the source piece files directly."""
+    global_shape = snapshot_info["shape"]
+    selected = snapshot_info["selected_index"]
+    running_sum_sq = 0.0
+    local_rows = 0
+
+    if rank == 0 and os.path.exists(output_path):
+        os.remove(output_path)
+    comm.Barrier()
+
+    with h5py.File(output_path, "w", driver="mpio", comm=comm) as out_hf:
+        fields = out_hf.create_group("fields")
+        output_dsets = (
+            fields.create_dataset("vx", shape=global_shape, dtype="float64"),
+            fields.create_dataset("vy", shape=global_shape, dtype="float64"),
+            fields.create_dataset("vz", shape=global_shape, dtype="float64"),
+        )
+
+        for mapping_index in range(rank, len(mappings), size):
+            mapping = mappings[mapping_index]
+            src_start = mapping["src_start"]
+            src_span = mapping["src_span"]
+            vds_start = mapping["vds_start"]
+            vds_span = mapping["vds_span"]
+
+            source_write = src_start[0] + selected - vds_start[0]
+
+            component_count = min(3, vds_span[1])
+            if component_count < 3:
+                raise ValueError(
+                    f"Expected a VDS mapping with all 3 velocity components, got {component_count}."
+                )
+
+            x0, y0, z0 = vds_start[2], vds_start[3], vds_start[4]
+            nx, ny, nz = vds_span[2], vds_span[3], vds_span[4]
+            sx0, sy0, sz0 = src_start[2], src_start[3], src_start[4]
+
+            with h5py.File(mapping["file_name"], "r") as source_hf:
+                source_dset = source_hf[mapping["dset_name"]]
+                if source_write < 0 or source_write >= source_dset.shape[0]:
+                    continue
+                for block_offset in range(0, nx, x_block_size):
+                    block_nx = min(x_block_size, nx - block_offset)
+                    buffer = np.empty((1, 1, block_nx, ny, nz), dtype=np.float64)
+                    output_slab = np.s_[x0 + block_offset:x0 + block_offset + block_nx, y0:y0 + ny, z0:z0 + nz]
+                    for component, output_dset in enumerate(output_dsets):
+                        source_component = src_start[1] + component - vds_start[1]
+                        source_dset.read_direct(
+                            buffer,
+                            source_sel=np.s_[
+                                source_write:source_write + 1,
+                                source_component:source_component + 1,
+                                sx0 + block_offset:sx0 + block_offset + block_nx,
+                                sy0:sy0 + ny,
+                                sz0:sz0 + nz,
+                            ],
+                        )
+                        block_values = buffer[0, 0]
+                        output_dset[output_slab] = block_values
+                        running_sum_sq += np.sum(block_values**2, dtype=np.float64)
+
+                    local_rows += block_nx * ny * nz
+
+    comm.Barrier()
+    return running_sum_sq, local_rows
+
+
 def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write_index=-1, x_block_size=None):
     """Import one Dedalus velocity snapshot into the structured FFT-ready HDF5 schema."""
     snapshot_info = comm.bcast(
@@ -811,6 +949,7 @@ def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write
     x_ranges = split_axis(nx, size)
     x_start, x_stop = x_ranges[rank]
     x_block_size = resolve_dedalus_import_x_block_size(x_block_size)
+    vds_mappings = bcast_dedalus_vds_source_mappings(input_path)
 
     if rank == 0:
         print(f"\nProcessing: {input_path}")
@@ -822,24 +961,41 @@ def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write
         if snapshot_info["cycle"] is not None:
             print(f"  Cycle: {snapshot_info['cycle']}")
         if h5py.get_config().mpi:
-            print(
-                "  Streaming Dedalus velocity task into structured HDF5 "
-                f"with x-block size {x_block_size}..."
-            )
+            if vds_mappings:
+                print(
+                    "  Detected virtual Dedalus velocity task; "
+                    f"reading {len(vds_mappings)} source mappings directly."
+                )
+                print(f"  Source-file streaming x-block size: {x_block_size}")
+            else:
+                print(
+                    "  Streaming Dedalus velocity task into structured HDF5 "
+                    f"with x-block size {x_block_size}..."
+                )
         else:
             print("  Reading Dedalus velocity task with independent serial HDF5 reads on each rank...")
 
     if h5py.get_config().mpi:
         if rank == 0:
             print("  Writing structured HDF5 in parallel as blocks are read...")
-        running_sum_sq, local_rows = stream_dedalus_snapshot_to_structured_h5(
-            input_path,
-            output_path,
-            snapshot_info,
-            x_start,
-            x_stop,
-            x_block_size,
-        )
+        if vds_mappings:
+            running_sum_sq, local_rows = stream_dedalus_vds_sources_to_structured_h5(
+                output_path,
+                snapshot_info,
+                vds_mappings,
+                x_block_size,
+            )
+            import_mode = "direct_vds_sources"
+        else:
+            running_sum_sq, local_rows = stream_dedalus_snapshot_to_structured_h5(
+                input_path,
+                output_path,
+                snapshot_info,
+                x_start,
+                x_stop,
+                x_block_size,
+            )
+            import_mode = "streamed_read_direct"
         if rank == 0:
             write_structured_h5_metadata(
                 output_path,
@@ -863,7 +1019,8 @@ def import_dedalus_snapshot_to_structured_h5(input_path, output_path=None, write
                     "source_handler_name": snapshot_info["handler_name"],
                     "source_set_number": int(snapshot_info["set_number"]),
                     "dedalus_import_x_block_size": int(x_block_size),
-                    "dedalus_import_mode": "streamed_read_direct",
+                    "dedalus_import_mode": import_mode,
+                    "dedalus_vds_source_mappings": int(len(vds_mappings or [])),
                 },
             )
         comm.Barrier()

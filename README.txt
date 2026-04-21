@@ -197,8 +197,11 @@ Main.py command patterns:
       --skip-slice \
       --dedalus-import-x-block-size 1
 
-    The Dedalus import reads /tasks/u in streaming x-blocks.  The command-line
-    option above controls how many x-planes each rank reads at a time; it can
+    The Dedalus import reads only /tasks/u into /fields/vx, /fields/vy, and
+    /fields/vz.  For normal HDF5 datasets it streams x-blocks from the input
+    file.  For Dedalus virtual/master HDF5 files, it reads the source p*.h5
+    files directly instead of reading through the virtual dataset.  The option
+    above controls how many x-planes each source read handles at a time; it can
     also be set with TPP_DEDALUS_IMPORT_X_BLOCK_SIZE.
 
   Basic TXT input:
