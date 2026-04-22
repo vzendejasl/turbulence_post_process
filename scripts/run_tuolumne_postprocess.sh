@@ -16,7 +16,9 @@ Usage:
 
   Each <input> can be:
     - a directory containing cycle_* subdirectories (MFEM sampled-data mode)
+    - a directory containing Dedalus *_fields_s*.h5 files
     - a Dedalus field-output HDF5 file
+    - a structured FFT-ready HDF5 file
 
 Example (MFEM):
   sbatch scripts/run_tuolumne_postprocess.sh \
@@ -98,26 +100,64 @@ first_matching_file() {
   return 1
 }
 
+append_sorted_matches() {
+  local search_dir="$1"
+  shift
+  local pattern
+  local matches=()
+  local match
+  for pattern in "$@"; do
+    while IFS= read -r match; do
+      matches+=("${match}")
+    done < <(find "${search_dir}" -maxdepth 1 -type f -name "${pattern}" | sort -V)
+  done
+  if [[ ${#matches[@]} -gt 0 ]]; then
+    printf '%s\n' "${matches[@]}" | sort -V
+    return 0
+  fi
+  return 1
+}
+
 python -c "import h5py, heffte; print('h5py mpi =', h5py.get_config().mpi); print('HeFFTe =', heffte.__version__)"
 
-# Resolve all inputs (files or cycle directories)
+# Resolve all inputs:
+#   - sampled-data roots expand to cycle_* directories
+#   - Dedalus field-output directories expand to *_fields_s*.h5 files
+#   - direct HDF5 file arguments are processed as file mode
 final_inputs=()
 for arg in "$@"; do
   if [[ -d "${arg}" ]]; then
-    # It's a directory: look for cycle_* subfolders (MFEM mode)
+    found_any=0
+
+    # MFEM/sampled-data mode.
     while IFS= read -r cycle_dir; do
       final_inputs+=("${cycle_dir}")
+      found_any=1
     done < <(find "${arg}" -mindepth 1 -maxdepth 1 -type d -name 'cycle_*' | sort -V)
-  elif [[ -f "${arg}" ]]; then
-    # It's a file: add it directly (Dedalus mode)
+
+    # Dedalus directory mode.  This catches directories like
+    # tgv_out_Re*_fields/ containing tgv_out_Re*_fields_s*.h5 files.
+    if [[ "${found_any}" -eq 0 ]]; then
+      while IFS= read -r dedalus_file; do
+        final_inputs+=("${dedalus_file}")
+        found_any=1
+      done < <(append_sorted_matches "${arg}" '*_fields_s*.h5' '*.h5' || true)
+    fi
+
+    if [[ "${found_any}" -eq 0 ]]; then
+      echo "Warning: directory '${arg}' has no cycle_* subdirectories or HDF5 inputs (skipping)" >&2
+    fi
+  elif [[ -f "${arg}" && "${arg}" == *.h5 ]]; then
+    # HDF5 file mode: Dedalus field-output files and already structured HDF5
+    # files are both handled by main.py.
     final_inputs+=("${arg}")
   else
-    echo "Warning: input '${arg}' not found (skipping)" >&2
+    echo "Warning: input '${arg}' is not a directory or HDF5 file (skipping)" >&2
   fi
 done
 
 if [[ ${#final_inputs[@]} -eq 0 ]]; then
-  echo "Error: No valid files or cycle directories found under the provided roots." >&2
+  echo "Error: No valid HDF5 files or cycle directories found under the provided inputs." >&2
   exit 1
 fi
 
@@ -187,7 +227,9 @@ for item in "${final_inputs[@]}"; do
       failures=$((failures + 1))
     fi
   else
-    # Dedalus mode: process one file at a time with its own srun
+    # HDF5 file mode: process one file at a time with its own srun.  main.py
+    # decides whether this is Dedalus field-output HDF5 or already structured
+    # FFT-ready HDF5.
     echo "Main input:   ${item}"
     postproc_args=("${item}")
 
