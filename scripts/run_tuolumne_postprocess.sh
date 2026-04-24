@@ -38,6 +38,9 @@ Notes:
   - if a velocity .h5 already exists in the cycle directory, it is used directly
   - otherwise the velocity .txt is used, and main.py may delete that .txt after
     a successful TXT -> HDF5 conversion
+  - main.py auto-discovers sibling density/pressure TXT or HDF5 inputs in the
+    same cycle directory; discovered scalar TXT files are deleted after their
+    standalone HDF5 copies are written successfully
   - supports both legacy velocity_sampled_data_uniform_interpolated_cycle_* names
     and SampledData* names for velocity inputs
   - override partition/account/time at submit time as needed, for example:
@@ -180,11 +183,6 @@ for item in "${final_inputs[@]}"; do
     velocity_h5="$(first_matching_file "${item}" \
       'velocity_sampled_data_uniform_interpolated_cycle_*.h5' \
       'SampledData*.h5' || true)"
-    density_txt="$(first_matching_file "${item}" \
-      'density_sampled_data_uniform_interpolated_cycle_*.txt' || true)"
-    pressure_txt="$(first_matching_file "${item}" \
-      'pressure_sampled_data_uniform_interpolated_cycle_*.txt' || true)"
-
     if [[ -n "${velocity_h5}" ]]; then
       main_input="${velocity_h5}"
     elif [[ -n "${velocity_txt}" ]]; then
@@ -198,15 +196,6 @@ for item in "${final_inputs[@]}"; do
 
     echo "Main input:   ${main_input}"
     postproc_args=("${main_input}")
-
-    if [[ -n "${density_txt}" ]]; then
-      echo "Density TXT:  ${density_txt}"
-      postproc_args+=(--scalar-file "${density_txt}" --slice-field density)
-    fi
-    if [[ -n "${pressure_txt}" ]]; then
-      echo "Pressure TXT: ${pressure_txt}"
-      postproc_args+=(--scalar-file "${pressure_txt}" --slice-field pressure)
-    fi
 
     postproc_args+=(
       --slice-field velocity_magnitude

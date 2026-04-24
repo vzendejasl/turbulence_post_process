@@ -1478,6 +1478,14 @@ def append_scalar_txt_to_h5_parallel(txt_path, h5_path, scalar_h5_path=None):
             f"Scalar field row count mismatch for {txt_path}: expected {total_rows}, wrote {total_written_rows}."
         )
 
+    if scalar_h5_path is not None and rank == 0:
+        print(f"  Deleting original scalar TXT: {txt_path}")
+        try:
+            os.remove(txt_path)
+        except OSError as exc:
+            print(f"  Warning: Could not delete scalar TXT {txt_path}: {exc}")
+    comm.Barrier()
+
     return field_name
 
 

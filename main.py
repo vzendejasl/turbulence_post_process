@@ -19,6 +19,7 @@ if not MPI.Is_initialized():
 
 from postprocess_fft.app import analyze_file_parallel
 from postprocess_fft.io import plot_spectra
+from postprocess_lib.auto_scalars import discover_auto_scalar_inputs
 from postprocess_lib import converter
 from postprocess_lib.prepare import ensure_all_structured_h5, resolve_existing_path
 from postprocess_vis.app import run_visualization
@@ -86,7 +87,7 @@ Examples:
         "--scalar-file",
         action="append",
         default=[],
-        help="Optional sampled-data scalar TXT file to append into the structured HDF5 before slicing. Repeat for multiple scalar fields.",
+        help="Optional extra sampled-data scalar TXT/HDF5 file to append. Density and pressure siblings are auto-discovered when present.",
     )
     parser.add_argument("--slice-cmap", default="RdBu_r", help="Colormap for slice plots")
     parser.add_argument("--slice-width", type=float, default=None, help="Optional square plot width in domain units")
@@ -177,14 +178,36 @@ Examples:
 
     for idx, path in enumerate(args.data_files):
         try:
+            resolved_input_path = resolve_existing_path(path)
+            explicit_scalar_paths = [
+                resolve_existing_path(scalar_path)
+                for scalar_path in args.scalar_file
+            ]
+            auto_scalar_paths = discover_auto_scalar_inputs(
+                resolved_input_path,
+                explicit_scalar_paths=explicit_scalar_paths,
+            )
+            scalar_paths = []
+            seen_scalar_paths = set()
+            for scalar_path in explicit_scalar_paths + auto_scalar_paths:
+                normalized_scalar_path = os.path.abspath(scalar_path)
+                if normalized_scalar_path in seen_scalar_paths:
+                    continue
+                seen_scalar_paths.add(normalized_scalar_path)
+                scalar_paths.append(scalar_path)
+
             if rank == 0:
                 print()
                 print("=" * 72)
                 print(f"FILE {idx + 1}/{len(args.data_files)}")
                 print("=" * 72)
-                print(f"Input: {path}")
+                print(f"Input: {resolved_input_path}")
+                if auto_scalar_paths:
+                    print("Auto-discovered scalar inputs:")
+                    for scalar_path in auto_scalar_paths:
+                        print(f"  {scalar_path}")
             prepared_paths = ensure_all_structured_h5(
-                path,
+                resolved_input_path,
                 last_only=args.last_step,
                 include_origin=True,
             )
@@ -197,11 +220,7 @@ Examples:
                         print(f"  --- Write {write_idx + 1}/{len(prepared_paths)} ---")
                     prepared.append(prepared_path)
 
-                if args.scalar_file:
-                    scalar_paths = [
-                        resolve_existing_path(scalar_path)
-                        for scalar_path in args.scalar_file
-                    ]
+                if scalar_paths:
                     added_scalar_fields = converter.append_scalar_fields_to_h5(
                         scalar_paths,
                         prepared_path,
