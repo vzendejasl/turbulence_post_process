@@ -80,7 +80,7 @@ Examples:
         "--slice-field",
         action="append",
         default=[],
-        help="Field for slice plots. Repeat to render multiple fields. If omitted, render velocity, vorticity, Q, R, density-gradient magnitude when density exists, and any appended scalar fields.",
+        help="Field for slice plots. Repeat to render multiple fields. Density-gradient magnitude is auto-appended when a density field exists.",
     )
     parser.add_argument(
         "--scalar-file",

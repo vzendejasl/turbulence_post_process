@@ -27,7 +27,7 @@ from postprocess_vis.field_specs import DENSITY_DATASET_NAME
 from postprocess_vis.field_specs import DERIVED_DATASET_NAMES
 from postprocess_vis.field_specs import DERIVED_FIELD_FAMILIES
 from postprocess_vis.field_specs import build_available_field_specs
-from postprocess_vis.field_specs import default_requested_field_names
+from postprocess_vis.field_specs import finalize_requested_field_names
 from postprocess_vis.normalization_labels import format_plot_label
 from postprocess_vis.slice_data import default_slice_data_output
 from postprocess_vis.slice_data import initialize_slice_data_file
@@ -717,13 +717,7 @@ def build_slice_requests(meta, slice_specs, default_axis):
 def resolve_requested_fields(filepath, field_names):
     """Resolve requested field names against the available HDF5-backed field specs."""
     field_lookup = available_field_specs(filepath)
-    if field_names:
-        requested_fields = list(field_names)
-        if "q_criterion" in requested_fields and "r_criterion" not in requested_fields:
-            q_index = requested_fields.index("q_criterion")
-            requested_fields.insert(q_index + 1, "r_criterion")
-    else:
-        requested_fields = default_requested_field_names(field_lookup)
+    requested_fields = finalize_requested_field_names(field_lookup, field_names)
 
     missing = [name for name in requested_fields if name not in field_lookup]
     if missing:
@@ -1037,7 +1031,7 @@ def main():
         "--field",
         action="append",
         default=[],
-        help="Field to plot. Repeat to render multiple fields. If omitted, render velocity, vorticity, Q, R, density-gradient magnitude when density exists, and any appended scalar fields.",
+        help="Field to plot. Repeat to render multiple fields. Density-gradient magnitude is auto-appended when a density field exists.",
     )
     parser.add_argument("--cmap", default="RdBu_r", help="Matplotlib colormap")
     parser.add_argument("--width", type=float, default=None, help="Optional square plot width in domain units")

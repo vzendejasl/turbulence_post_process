@@ -67,3 +67,19 @@ def default_requested_field_names(field_lookup):
     scalar_fields = [name for name, spec in field_lookup.items() if spec[3] == "scalar"]
     requested_fields.extend(scalar_fields)
     return requested_fields
+
+
+def finalize_requested_field_names(field_lookup, requested_fields):
+    """Return the final field list after applying auto-included derived fields."""
+    if requested_fields:
+        resolved_fields = list(requested_fields)
+        if "q_criterion" in resolved_fields and "r_criterion" not in resolved_fields:
+            q_index = resolved_fields.index("q_criterion")
+            resolved_fields.insert(q_index + 1, "r_criterion")
+        if (
+            DENSITY_GRADIENT_FIELD_NAME in field_lookup
+            and DENSITY_GRADIENT_FIELD_NAME not in resolved_fields
+        ):
+            resolved_fields.append(DENSITY_GRADIENT_FIELD_NAME)
+        return resolved_fields
+    return default_requested_field_names(field_lookup)

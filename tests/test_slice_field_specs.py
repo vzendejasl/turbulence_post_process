@@ -9,6 +9,7 @@ import numpy as np
 
 from postprocess_vis.field_specs import build_available_field_specs
 from postprocess_vis.field_specs import default_requested_field_names
+from postprocess_vis.field_specs import finalize_requested_field_names
 
 
 class TestSliceFieldSpecs(unittest.TestCase):
@@ -58,6 +59,32 @@ class TestSliceFieldSpecs(unittest.TestCase):
 
         self.assertNotIn("density_gradient_magnitude", field_lookup)
         self.assertNotIn("density_gradient_magnitude", default_requested_field_names(field_lookup))
+
+    def test_explicit_requested_fields_still_include_density_gradient(self) -> None:
+        path = self._write_fields_file(include_density=True)
+        self.addCleanup(lambda: os.unlink(path))
+
+        with h5py.File(path, "r") as hf:
+            field_lookup = build_available_field_specs(hf["fields"])
+
+        requested_fields = finalize_requested_field_names(field_lookup, ["density", "velocity_magnitude"])
+        self.assertEqual(
+            requested_fields,
+            ["density", "velocity_magnitude", "density_gradient_magnitude"],
+        )
+
+    def test_explicit_q_field_still_inserts_r_and_density_gradient(self) -> None:
+        path = self._write_fields_file(include_density=True)
+        self.addCleanup(lambda: os.unlink(path))
+
+        with h5py.File(path, "r") as hf:
+            field_lookup = build_available_field_specs(hf["fields"])
+
+        requested_fields = finalize_requested_field_names(field_lookup, ["q_criterion"])
+        self.assertEqual(
+            requested_fields,
+            ["q_criterion", "r_criterion", "density_gradient_magnitude"],
+        )
 
 
 if __name__ == "__main__":
