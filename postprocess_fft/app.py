@@ -40,7 +40,6 @@ from .spectra import compensate_spectrum
 from .transform import backward_field
 from .transform import forward_field
 from .transform import get_backend
-from .transform import local_integer_wavenumber_mesh
 from .transform import local_wavenumber_mesh
 from .transform import print_component_ranges
 from .transform import verify_decomposition
@@ -254,15 +253,17 @@ def analyze_file_parallel(
         vz_k,
         shape,
         local_box,
+        dx,
+        dy,
+        dz,
         comm,
     )
     Enst = None if Enst_x is None else Enst_x + Enst_y + Enst_z
-    _, Hel = compute_helicity_spectrum_from_modes(vx_k, vy_k, vz_k, shape, local_box, comm)
+    _, Hel = compute_helicity_spectrum_from_modes(vx_k, vy_k, vz_k, shape, local_box, dx, dy, dz, comm)
 
-    KX_int, KY_int, KZ_int = local_integer_wavenumber_mesh(shape, local_box)
-    omega_x_k = 1j * (KY_int * vz_k - KZ_int * vy_k)
-    omega_y_k = 1j * (KZ_int * vx_k - KX_int * vz_k)
-    omega_z_k = 1j * (KX_int * vy_k - KY_int * vx_k)
+    omega_x_k = 1j * (KY * vz_k - KZ * vy_k)
+    omega_y_k = 1j * (KZ * vx_k - KX * vz_k)
+    omega_z_k = 1j * (KX * vy_k - KY * vx_k)
     omega_x = backward_field(plan, omega_x_k, local_shape)
     omega_y = backward_field(plan, omega_y_k, local_shape)
     omega_z = backward_field(plan, omega_z_k, local_shape)
@@ -270,11 +271,11 @@ def analyze_file_parallel(
     enstrophy_rel_error = abs(vorticity_ke - total_enstrophy) / max(abs(total_enstrophy), 1.0e-30)
 
     if root:
-        print(f"  Total enstrophy (fourier, code convention): {total_enstrophy:.8f}")
-        print(f"  Vorticity KE (real-space, code convention): {vorticity_ke:.8f}")
+        print(f"  Total enstrophy (fourier): {total_enstrophy:.8f}")
+        print(f"  Vorticity KE (real-space): {vorticity_ke:.8f}")
         print(f"  Enstrophy relative error: {enstrophy_rel_error:.8e}")
 
-    compute_energy_dissipation_enstrophy(vx_k, vy_k, vz_k, shape, local_box, comm, root)
+    compute_energy_dissipation_enstrophy(vx_k, vy_k, vz_k, shape, local_box, dx, dy, dz, comm, root)
 
     if root:
         print()
@@ -320,15 +321,26 @@ def analyze_file_parallel(
         Enst_z = zero_near_zero(Enst_z)
         Hel = zero_near_zero(Hel)
         domain_length = float(dx) * float(shape[0])
+        delta_k_phy = float(2.0 * np.pi / domain_length)
+        k_centers_phy = zero_near_zero((2.0 * np.pi / domain_length) * np.asarray(k_centers, dtype=np.float64))
+        E_total_phy_density = zero_near_zero(np.asarray(E_total, dtype=np.float64) / delta_k_phy)
+        E_comp_phy_density = zero_near_zero(np.asarray(E_comp, dtype=np.float64) / delta_k_phy)
+        E_rot_phy_density = zero_near_zero(np.asarray(E_rot, dtype=np.float64) / delta_k_phy)
+        Enst_phy_density = zero_near_zero(np.asarray(Enst, dtype=np.float64) / delta_k_phy)
+        Hel_phy_density = zero_near_zero(np.asarray(Hel, dtype=np.float64) / delta_k_phy)
         r_values = None
         structure_function_longitudinal = None
         structure_function_path = None
         large_r_reference = None
         large_r_relative_difference = None
         E_total_comp = zero_near_zero(compensate_spectrum(k_centers, E_total, 5.0 / 3.0))
+        E_total_comp_phy = zero_near_zero(compensate_spectrum(k_centers_phy, E_total_phy_density, 5.0 / 3.0))
         E_comp_comp = zero_near_zero(compensate_spectrum(k_centers, E_comp, 5.0 / 3.0))
+        E_comp_comp_phy = zero_near_zero(compensate_spectrum(k_centers_phy, E_comp_phy_density, 5.0 / 3.0))
         E_rot_comp = zero_near_zero(compensate_spectrum(k_centers, E_rot, 5.0 / 3.0))
+        E_rot_comp_phy = zero_near_zero(compensate_spectrum(k_centers_phy, E_rot_phy_density, 5.0 / 3.0))
         Enst_comp = zero_near_zero(compensate_spectrum(k_centers, Enst, -1.0 / 3.0))
+        Enst_comp_phy = zero_near_zero(compensate_spectrum(k_centers_phy, Enst_phy_density, -1.0 / 3.0))
         total_ke = zero_near_zero_scalar(total_ke)
         comp_ke = zero_near_zero_scalar(comp_ke)
         rot_ke = zero_near_zero_scalar(rot_ke)
@@ -431,15 +443,25 @@ def analyze_file_parallel(
             }
         save_spectra(
             k_centers,
+            k_centers_phy,
             E_total,
+            E_total_phy_density,
             E_comp,
+            E_comp_phy_density,
             E_rot,
+            E_rot_phy_density,
             Enst,
+            Enst_phy_density,
             Hel,
+            Hel_phy_density,
             E_total_comp,
+            E_total_comp_phy,
             E_comp_comp,
+            E_comp_comp_phy,
             E_rot_comp,
+            E_rot_comp_phy,
             Enst_comp,
+            Enst_comp_phy,
             filename,
             step_number,
             time_value,
@@ -505,21 +527,31 @@ def analyze_file_parallel(
             print("Visualization is not implemented in the parallel script yet.")
         result = {
             "k_centers": k_centers,
+            "k_centers_phy": k_centers_phy,
             "E_total": E_total,
+            "E_total_phy": E_total_phy_density,
             "E_total_x": E_total_x,
             "E_total_y": E_total_y,
             "E_total_z": E_total_z,
             "E_comp": E_comp,
+            "E_comp_phy": E_comp_phy_density,
             "E_rot": E_rot,
+            "E_rot_phy": E_rot_phy_density,
             "Enstrophy": Enst,
+            "Enstrophy_phy": Enst_phy_density,
             "Enstrophy_x": Enst_x,
             "Enstrophy_y": Enst_y,
             "Enstrophy_z": Enst_z,
             "Helicity": Hel,
+            "Helicity_phy": Hel_phy_density,
             "E_total_compensated": E_total_comp,
+            "E_total_compensated_phy": E_total_comp_phy,
             "E_comp_compensated": E_comp_comp,
+            "E_comp_compensated_phy": E_comp_comp_phy,
             "E_rot_compensated": E_rot_comp,
+            "E_rot_compensated_phy": E_rot_comp_phy,
             "Enstrophy_compensated": Enst_comp,
+            "Enstrophy_compensated_phy": Enst_comp_phy,
             "step_number": step_number,
             "time_value": time_value,
             "r_values": r_values,

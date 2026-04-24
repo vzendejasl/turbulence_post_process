@@ -750,6 +750,7 @@ def run_visualization(
     figure_size=8.0,
     save_slice_data=True,
     slice_data_output=None,
+    value_normalization="none",
 ):
     """Render one or more slice images from a structured HDF5 velocity file."""
     if comm is None:
@@ -852,16 +853,23 @@ def run_visualization(
                 flush=True,
             )
         computed_rms = float(global_stats["global_rms"])
-        value_normalization = "global_rms"
-        normalization_rms = computed_rms
-        if normalization_rms <= 1.0e-30:
-            value_normalization = "none"
-            normalization_rms = 1.0
-            log_rank0(rank, f"  RMS for {field_label} is ~0; leaving values unscaled.")
-        display_label = format_plot_label(latex_label, value_normalization=value_normalization)
-        normalized_limits = (
-            float(global_stats["global_min"]) / normalization_rms,
-            float(global_stats["global_max"]) / normalization_rms,
+        field_value_normalization = str(value_normalization or "none").strip().lower()
+        normalization_scale = 1.0
+        if field_value_normalization == "global_rms":
+            normalization_scale = computed_rms
+            if normalization_scale <= 1.0e-30:
+                field_value_normalization = "none"
+                normalization_scale = 1.0
+                log_rank0(rank, f"  RMS for {field_label} is ~0; leaving values unscaled.")
+        elif field_value_normalization != "none":
+            raise ValueError(
+                f"Unsupported slice value normalization '{value_normalization}'. "
+                "Use one of: ['none', 'global_rms']"
+            )
+        display_label = format_plot_label(latex_label, value_normalization=field_value_normalization)
+        display_limits = (
+            float(global_stats["global_min"]) / normalization_scale,
+            float(global_stats["global_max"]) / normalization_scale,
         )
         for axis_name, plane_index, slice_tag in requests:
             slice_start = time.perf_counter()
@@ -885,11 +893,13 @@ def run_visualization(
 
             gather_start = time.perf_counter()
             plane = gather_plane(axis_name, local_bounds, local_plane, meta["shape"], comm)
-            local_plane_normalized = None
-            if local_plane is not None:
-                local_plane_normalized = np.asarray(local_plane, dtype=np.float64) / normalization_rms
+            local_plane_raw = None if local_plane is None else np.asarray(local_plane, dtype=np.float64)
+            local_plane_display = None if local_plane_raw is None else local_plane_raw / normalization_scale
             if rank == 0:
-                plane = np.asarray(plane, dtype=np.float64) / normalization_rms
+                plane = np.asarray(plane, dtype=np.float64)
+                plane_display = plane / normalization_scale
+            else:
+                plane_display = None
             log_rank0(
                 rank,
                 f"  Gather finished for {field_label}/{stored_slice_tag} in "
@@ -906,7 +916,7 @@ def run_visualization(
                         stored_slice_tag,
                         axis_name,
                         local_bounds,
-                        local_plane_normalized,
+                        local_plane_raw,
                         comm,
                     )
                     comm.Barrier()
@@ -915,10 +925,10 @@ def run_visualization(
                             saved_slice_data_path,
                             field_label,
                             stored_slice_tag,
-                            normalized_limits[0],
-                            normalized_limits[1],
+                            float(global_stats["global_min"]),
+                            float(global_stats["global_max"]),
                             computed_rms,
-                            value_normalization=value_normalization,
+                            value_normalization="none",
                         )
                     comm.Barrier()
                 else:
@@ -930,10 +940,10 @@ def run_visualization(
                             saved_slice_data_path,
                             field_label,
                             stored_slice_tag,
-                            normalized_limits[0],
-                            normalized_limits[1],
+                            float(global_stats["global_min"]),
+                            float(global_stats["global_max"]),
                             computed_rms,
-                            value_normalization=value_normalization,
+                            value_normalization="none",
                         )
                     comm.Barrier()
                 log_rank0(
@@ -961,7 +971,7 @@ def run_visualization(
                 )
                 render_start = time.perf_counter()
                 rendered_info = render_plane_image(
-                    plane,
+                    plane_display,
                     meta,
                     axis_name,
                     plane_index,
@@ -973,7 +983,7 @@ def run_visualization(
                     plot,
                     save_dpi,
                     figure_size,
-                    colorbar_limits=normalized_limits,
+                    colorbar_limits=display_limits,
                 )
                 rendered_paths = rendered_info["saved_paths"]
                 for saved_path in rendered_paths:
@@ -991,7 +1001,7 @@ def run_visualization(
                         rendered_info["colorbar_min"],
                         rendered_info["colorbar_max"],
                         computed_rms,
-                        value_normalization,
+                        field_value_normalization,
                         saved_path,
                     )
                 print(
@@ -1039,6 +1049,12 @@ def main():
     parser.add_argument("--no-slice-data", action="store_true", help="Skip writing the combined *_slices.h5 file.")
     parser.add_argument("--slice-data-output", default=None, help="Optional path for the combined slice-data HDF5 file.")
     parser.add_argument(
+        "--value-normalization",
+        default="none",
+        choices=["none", "global_rms"],
+        help="Optional plot-time normalization for rendered slice values. Saved slice-data HDF5 values remain raw.",
+    )
+    parser.add_argument(
         "--backend",
         default="heffte_fftw",
         choices=["heffte_fftw", "heffte_stock"],
@@ -1060,4 +1076,5 @@ def main():
         figure_size=args.figsize,
         save_slice_data=not args.no_slice_data,
         slice_data_output=args.slice_data_output,
+        value_normalization=args.value_normalization,
     )

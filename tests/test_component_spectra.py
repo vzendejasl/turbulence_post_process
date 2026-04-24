@@ -44,19 +44,33 @@ class TestComponentSpectra(unittest.TestCase):
         shape = (4, 4, 4)
         box = build_boxes(shape, (1, 1, 1))[0]
         comm = MPI.COMM_SELF
+        dx = dy = dz = 0.25
 
         grid = np.arange(64, dtype=np.float64).reshape(shape)
         vx_k = (grid + 1.0j * (grid + 1.0)).astype(np.complex128)
         vy_k = (0.5 * grid - 2.0j).astype(np.complex128)
         vz_k = (-1.5 * grid + 0.25j * grid).astype(np.complex128)
 
-        k_total, enst_total, total_enstrophy = compute_enstrophy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, comm)
+        k_total, enst_total, total_enstrophy = compute_enstrophy_spectrum_from_modes(
+            vx_k,
+            vy_k,
+            vz_k,
+            shape,
+            box,
+            dx,
+            dy,
+            dz,
+            comm,
+        )
         k_comp, enst_x, enst_y, enst_z, component_total_enstrophy = compute_enstrophy_component_spectra_from_modes(
             vx_k,
             vy_k,
             vz_k,
             shape,
             box,
+            dx,
+            dy,
+            dz,
             comm,
         )
 

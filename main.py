@@ -92,6 +92,12 @@ Examples:
     parser.add_argument("--slice-width", type=float, default=None, help="Optional square plot width in domain units")
     parser.add_argument("--slice-dpi", type=int, default=600, help="Slice image save DPI. Default is 600.")
     parser.add_argument(
+        "--slice-value-normalization",
+        default="none",
+        choices=["none", "global_rms"],
+        help="Optional plot-time normalization for rendered slice values. Saved slice-data HDF5 values remain raw. Default is none.",
+    )
+    parser.add_argument(
         "--slice-figsize",
         type=float,
         default=8.0,
@@ -247,6 +253,7 @@ Examples:
                         save_dpi=args.slice_dpi,
                         figure_size=args.slice_figsize,
                         save_slice_data=not args.no_slice_data,
+                        value_normalization=args.slice_value_normalization,
                         slice_data_output=(
                             args.slice_data_output
                             if idx == 0 and write_idx == 0

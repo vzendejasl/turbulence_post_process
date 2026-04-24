@@ -11,6 +11,7 @@ from .common import global_mean_energy
 from .transform import backward_field
 from .transform import forward_field
 from .transform import local_integer_wavenumber_mesh
+from .transform import local_wavenumber_mesh
 
 
 def _shell_bin_geometry(shape, box):
@@ -65,16 +66,16 @@ def compute_energy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
     global_hist = None if global_hist_x is None else global_hist_x + global_hist_y + global_hist_z
     return k_bin_centers, global_hist
 
-def compute_enstrophy_component_spectra_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
+def compute_enstrophy_component_spectra_from_modes(vx_k, vy_k, vz_k, shape, box, dx, dy, dz, comm):
     norm = float(np.prod(shape))
     vx_kn = vx_k / norm
     vy_kn = vy_k / norm
     vz_kn = vz_k / norm
 
-    KX_int, KY_int, KZ_int = local_integer_wavenumber_mesh(shape, box)
-    omega_x_k = 1j * (KY_int * vz_kn - KZ_int * vy_kn)
-    omega_y_k = 1j * (KZ_int * vx_kn - KX_int * vz_kn)
-    omega_z_k = 1j * (KX_int * vy_kn - KY_int * vx_kn)
+    KX_phys, KY_phys, KZ_phys = local_wavenumber_mesh(shape, box, dx, dy, dz)
+    omega_x_k = 1j * (KY_phys * vz_kn - KZ_phys * vy_kn)
+    omega_y_k = 1j * (KZ_phys * vx_kn - KX_phys * vz_kn)
+    omega_z_k = 1j * (KX_phys * vy_kn - KY_phys * vx_kn)
 
     component_x_density = 0.5 * np.abs(omega_x_k) ** 2
     component_y_density = 0.5 * np.abs(omega_y_k) ** 2
@@ -95,24 +96,24 @@ def compute_enstrophy_component_spectra_from_modes(vx_k, vy_k, vz_k, shape, box,
     return k_bin_centers, global_hist_x, global_hist_y, global_hist_z, total_enstrophy
 
 
-def compute_enstrophy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
+def compute_enstrophy_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, dx, dy, dz, comm):
     k_bin_centers, global_hist_x, global_hist_y, global_hist_z, total_enstrophy = (
-        compute_enstrophy_component_spectra_from_modes(vx_k, vy_k, vz_k, shape, box, comm)
+        compute_enstrophy_component_spectra_from_modes(vx_k, vy_k, vz_k, shape, box, dx, dy, dz, comm)
     )
     global_hist = None if global_hist_x is None else global_hist_x + global_hist_y + global_hist_z
     return k_bin_centers, global_hist, total_enstrophy
 
 
-def compute_helicity_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
+def compute_helicity_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, dx, dy, dz, comm):
     norm = float(np.prod(shape))
     vx_kn = vx_k / norm
     vy_kn = vy_k / norm
     vz_kn = vz_k / norm
 
-    KX_int, KY_int, KZ_int = local_integer_wavenumber_mesh(shape, box)
-    omega_x_k = 1j * (KY_int * vz_kn - KZ_int * vy_kn)
-    omega_y_k = 1j * (KZ_int * vx_kn - KX_int * vz_kn)
-    omega_z_k = 1j * (KX_int * vy_kn - KY_int * vx_kn)
+    KX_phys, KY_phys, KZ_phys = local_wavenumber_mesh(shape, box, dx, dy, dz)
+    omega_x_k = 1j * (KY_phys * vz_kn - KZ_phys * vy_kn)
+    omega_y_k = 1j * (KZ_phys * vx_kn - KX_phys * vz_kn)
+    omega_z_k = 1j * (KX_phys * vy_kn - KY_phys * vx_kn)
 
     helicity_density = np.real(
         vx_kn * np.conj(omega_x_k) +
@@ -120,13 +121,7 @@ def compute_helicity_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
         vz_kn * np.conj(omega_z_k)
     )
 
-    nx, _, _ = shape
-    k_magnitude = np.sqrt(KX_int**2 + KY_int**2 + KZ_int**2)
-    k_max_int = int(math.ceil(nx * 0.5 * math.sqrt(3.0)))
-    k_bin_edges = np.linspace(0.5, k_max_int + 0.5, k_max_int + 1)
-    if nx * 0.5 * math.sqrt(3.0) < k_bin_edges[-2]:
-        k_bin_edges = k_bin_edges[:-1]
-    k_bin_centers = 0.5 * (k_bin_edges[:-1] + k_bin_edges[1:])
+    k_magnitude, k_bin_edges, k_bin_centers = _shell_bin_geometry(shape, box)
 
     local_hist, _ = np.histogram(
         k_magnitude.ravel(order="C"),
@@ -139,7 +134,7 @@ def compute_helicity_spectrum_from_modes(vx_k, vy_k, vz_k, shape, box, comm):
     return k_bin_centers, global_hist
 
 
-def compute_energy_dissipation_enstrophy(vx_k, vy_k, vz_k, shape, box, comm, root):
+def compute_energy_dissipation_enstrophy(vx_k, vy_k, vz_k, shape, box, dx, dy, dz, comm, root):
     norm = float(np.prod(shape))
     vx_kn = vx_k / norm
     vy_kn = vy_k / norm
@@ -151,14 +146,14 @@ def compute_energy_dissipation_enstrophy(vx_k, vy_k, vz_k, shape, box, comm, roo
     local_total_ke = np.sum(energy_density, dtype=np.float64)
     total_ke = comm.allreduce(local_total_ke, op=MPI.SUM)
 
-    KX_int, KY_int, KZ_int = local_integer_wavenumber_mesh(shape, box)
-    k_squared = KX_int**2 + KY_int**2 + KZ_int**2
+    KX_phys, KY_phys, KZ_phys = local_wavenumber_mesh(shape, box, dx, dy, dz)
+    k_squared = KX_phys**2 + KY_phys**2 + KZ_phys**2
     local_diss = np.sum(energy_density * k_squared, dtype=np.float64)
     total_diss = comm.allreduce(local_diss, op=MPI.SUM)
 
-    omega_x_k = 1j * (KY_int * vz_kn - KZ_int * vy_kn)
-    omega_y_k = 1j * (KZ_int * vx_kn - KX_int * vz_kn)
-    omega_z_k = 1j * (KX_int * vy_kn - KY_int * vx_kn)
+    omega_x_k = 1j * (KY_phys * vz_kn - KZ_phys * vy_kn)
+    omega_y_k = 1j * (KZ_phys * vx_kn - KX_phys * vz_kn)
+    omega_z_k = 1j * (KX_phys * vy_kn - KY_phys * vx_kn)
     local_enstrophy = 0.5 * np.sum(
         np.abs(omega_x_k) ** 2 + np.abs(omega_y_k) ** 2 + np.abs(omega_z_k) ** 2,
         dtype=np.float64,

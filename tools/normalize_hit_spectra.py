@@ -56,6 +56,21 @@ _CSV_COLUMN_ALIASES = {
 }
 
 
+_SPECTRUM_COLUMN_ALIASES = {
+    "k": {
+        "k",
+    },
+    "k_phy": {
+        "kphy",
+        "k_phys",
+        "kphysical",
+    },
+    "E_total": {
+        "etotal",
+    },
+}
+
+
 def _plot_style() -> dict[str, object]:
     return {
         "font.family": "serif",
@@ -159,6 +174,10 @@ def _normalize_csv_header_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", name.lower())
 
 
+def _normalize_spectrum_header_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", name.lower())
+
+
 def _resolve_required_csv_columns(header: list[str]) -> dict[str, int] | None:
     normalized_to_index = {
         _normalize_csv_header_name(name): index
@@ -173,6 +192,24 @@ def _resolve_required_csv_columns(header: list[str]) -> dict[str, int] | None:
                 break
         else:
             return None
+    return resolved
+
+
+def _resolve_spectrum_columns(header: list[str]) -> dict[str, int] | None:
+    normalized_to_index = {
+        _normalize_spectrum_header_name(name): index
+        for index, name in enumerate(header)
+    }
+    resolved: dict[str, int] = {}
+    for canonical_name, aliases in _SPECTRUM_COLUMN_ALIASES.items():
+        for alias in aliases:
+            index = normalized_to_index.get(alias)
+            if index is not None:
+                resolved[canonical_name] = index
+                break
+
+    if "k" not in resolved or "E_total" not in resolved:
+        return None
     return resolved
 
 
@@ -291,7 +328,21 @@ def _read_csv_row_by_cycle(csv_path: Path, cycle_number: int) -> dict[str, float
     raise SystemExit(f"Could not find cycle {cycle_number} in CSV file: {csv_path}")
 
 
-def _read_spectrum(spectrum_path: Path) -> tuple[np.ndarray, np.ndarray]:
+def _read_spectrum(spectrum_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    try:
+        with open(spectrum_path, "r", encoding="utf-8") as handle:
+            raw_header = handle.readline().strip()
+    except OSError as exc:
+        raise SystemExit(f"Could not read spectrum header: {spectrum_path}") from exc
+
+    header = [entry.strip() for entry in raw_header.split(",")]
+    columns = _resolve_spectrum_columns(header)
+    if columns is None:
+        raise SystemExit(
+            f"Missing required spectrum columns in {spectrum_path}. "
+            "Need at least k and E_total."
+        )
+
     try:
         data = np.loadtxt(spectrum_path, delimiter=",", skiprows=1)
     except ValueError as exc:
@@ -300,9 +351,39 @@ def _read_spectrum(spectrum_path: Path) -> tuple[np.ndarray, np.ndarray]:
     data = np.asarray(data, dtype=np.float64)
     if data.ndim == 1:
         data = data.reshape(1, -1)
-    if data.shape[1] < 2:
-        raise SystemExit(f"Expected at least two columns in spectrum file: {spectrum_path}")
-    return data[:, 0], data[:, 1]
+    required_column_count = max(columns.values()) + 1
+    if data.shape[1] < required_column_count:
+        raise SystemExit(
+            f"Spectrum file {spectrum_path} has only {data.shape[1]} column(s), "
+            f"but header requires at least {required_column_count}."
+        )
+
+    k_saved = np.asarray(data[:, columns["k"]], dtype=np.float64)
+    e_total = np.asarray(data[:, columns["E_total"]], dtype=np.float64)
+    k_phys = None
+    if "k_phy" in columns:
+        k_phys = np.asarray(data[:, columns["k_phy"]], dtype=np.float64)
+    return k_saved, e_total, k_phys
+
+
+def _infer_delta_k_phys(
+    k_saved: np.ndarray,
+    k_phys_saved: np.ndarray | None,
+    domain_length: float,
+) -> tuple[float, str]:
+    if k_phys_saved is not None:
+        k_saved = np.asarray(k_saved, dtype=np.float64)
+        k_phys_saved = np.asarray(k_phys_saved, dtype=np.float64)
+        valid = np.isfinite(k_saved) & np.isfinite(k_phys_saved) & (np.abs(k_saved) > 1.0e-30)
+        if np.any(valid):
+            ratios = k_phys_saved[valid] / k_saved[valid]
+            delta_k_phys = float(np.median(ratios))
+            if delta_k_phys > 0.0:
+                return delta_k_phys, "saved k_phy column"
+
+    if domain_length <= 0.0:
+        raise SystemExit(f"Domain length must be positive, got {domain_length:.16e}")
+    return float(2.0 * math.pi / domain_length), "domain-length fallback"
 
 
 def _normalized_output_paths(spectrum_path: Path) -> tuple[Path, Path, Path]:
@@ -315,20 +396,22 @@ def _normalized_output_paths(spectrum_path: Path) -> tuple[Path, Path, Path]:
 
 def _compute_normalized_spectrum(
     k_saved: np.ndarray,
+    k_phys_saved: np.ndarray | None,
     e_total: np.ndarray,
     epsilon: float,
     eta: float,
     domain_length: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, str]:
     if epsilon <= 0.0:
         raise SystemExit(f"AvgDissipation must be positive, got {epsilon:.16e}")
     if eta <= 0.0:
         raise SystemExit(f"AvgKolmLen must be positive, got {eta:.16e}")
-    if domain_length <= 0.0:
-        raise SystemExit(f"Domain length must be positive, got {domain_length:.16e}")
 
-    delta_k_phys = 2.0 * math.pi / domain_length
-    k_phys = delta_k_phys * np.asarray(k_saved, dtype=np.float64)
+    delta_k_phys, k_source = _infer_delta_k_phys(k_saved, k_phys_saved, domain_length)
+    if k_phys_saved is None:
+        k_phys = delta_k_phys * np.asarray(k_saved, dtype=np.float64)
+    else:
+        k_phys = np.asarray(k_phys_saved, dtype=np.float64)
     k_eta = k_phys * eta
     e_density = np.asarray(e_total, dtype=np.float64) / delta_k_phys
     energy_scale = (epsilon ** (2.0 / 3.0)) * (eta ** (5.0 / 3.0))
@@ -338,25 +421,36 @@ def _compute_normalized_spectrum(
     e_compensated[positive_mask] = (
         e_normalized[positive_mask] * (k_eta[positive_mask] ** (5.0 / 3.0))
     )
-    return k_eta, e_normalized, e_compensated, float(delta_k_phys)
+    return k_eta, e_normalized, e_compensated, float(delta_k_phys), k_source
 
 
 def _apply_k_cutoff(
     k_saved: np.ndarray,
+    k_phys_saved: np.ndarray | None,
     e_total: np.ndarray,
     k_cutoff: int | None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray]:
     if k_cutoff is None:
-        return np.asarray(k_saved, dtype=np.float64), np.asarray(e_total, dtype=np.float64)
+        return (
+            np.asarray(k_saved, dtype=np.float64),
+            None if k_phys_saved is None else np.asarray(k_phys_saved, dtype=np.float64),
+            np.asarray(e_total, dtype=np.float64),
+        )
     if k_cutoff < 0:
         raise SystemExit(f"k cutoff must be non-negative, got {k_cutoff}")
 
     k_saved = np.asarray(k_saved, dtype=np.float64)
+    if k_phys_saved is not None:
+        k_phys_saved = np.asarray(k_phys_saved, dtype=np.float64)
     e_total = np.asarray(e_total, dtype=np.float64)
     mask = k_saved <= float(k_cutoff)
     if not np.any(mask):
         raise SystemExit(f"No spectrum entries remain after applying k cutoff <= {k_cutoff}")
-    return k_saved[mask], e_total[mask]
+    return (
+        k_saved[mask],
+        None if k_phys_saved is None else k_phys_saved[mask],
+        e_total[mask],
+    )
 
 
 def _write_normalized_text(
@@ -385,6 +479,7 @@ def _write_normalized_metadata(
     eta: float,
     domain_length: float,
     delta_k_phys: float,
+    k_source: str,
     k_cutoff: int | None,
 ) -> None:
     with open(output_path, "w", encoding="utf-8") as handle:
@@ -396,6 +491,7 @@ def _write_normalized_metadata(
         handle.write(f"# AvgKolmLen: {eta:.16e}\n")
         handle.write(f"# Domain length: {domain_length:.16e}\n")
         handle.write(f"# Physical shell width delta_k: {delta_k_phys:.16e}\n")
+        handle.write(f"# Physical k source: {k_source}\n")
         if k_cutoff is None:
             handle.write("# Integer-wavenumber cutoff: none\n")
         else:
@@ -485,10 +581,11 @@ def _process_spectrum(
 
     csv_path = _find_turbulence_csv(cycle_dir, spectrum_path, turb_csv_override)
     stats = _read_csv_row_by_cycle(csv_path, cycle_number)
-    k_saved, e_total = _read_spectrum(spectrum_path)
-    k_saved, e_total = _apply_k_cutoff(k_saved, e_total, k_cutoff)
-    k_eta, e_normalized, e_compensated, delta_k_phys = _compute_normalized_spectrum(
+    k_saved, e_total, k_phys_saved = _read_spectrum(spectrum_path)
+    k_saved, k_phys_saved, e_total = _apply_k_cutoff(k_saved, k_phys_saved, e_total, k_cutoff)
+    k_eta, e_normalized, e_compensated, delta_k_phys, k_source = _compute_normalized_spectrum(
         k_saved=k_saved,
+        k_phys_saved=k_phys_saved,
         e_total=e_total,
         epsilon=stats["AvgDissipation"],
         eta=stats["AvgKolmLen"],
@@ -511,6 +608,7 @@ def _process_spectrum(
         eta=stats["AvgKolmLen"],
         domain_length=domain_length,
         delta_k_phys=delta_k_phys,
+        k_source=k_source,
         k_cutoff=k_cutoff,
     )
 
@@ -532,6 +630,7 @@ def _process_spectrum(
     print(f"  Normalization dissipation (AvgDissipation): {stats['AvgDissipation']:.16e}")
     print(f"  Normalization Kolmogorov length (AvgKolmLen): {stats['AvgKolmLen']:.16e}")
     print(f"  Domain length used for k conversion: {domain_length:.16e}")
+    print(f"  Physical k source: {k_source}")
     if k_cutoff is not None:
         print(f"  Integer-wavenumber cutoff: <= {k_cutoff}")
     print(f"  Wrote: {text_path}")

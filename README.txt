@@ -239,6 +239,9 @@ Main.py command patterns:
   Change slice DPI and figure size:
     mpirun -n 4 python main.py your_velocity_data.h5 --slice-dpi 600 --slice-figsize 10
 
+  Render RMS-normalized slice plots while still saving raw slice arrays:
+    mpirun -n 4 python main.py your_velocity_data.h5 --slice-value-normalization global_rms
+
   Render only selected fields:
     mpirun -n 4 python main.py your_velocity_data.h5 \
       --slice-field velocity_magnitude \
@@ -355,6 +358,12 @@ Default Q-R analysis outputs from the FFT step:
   - <base>_spectra_metadata.txt
   - <base>_spectra_components.txt
   - <base>_spectra_qr_joint_pdf.h5
+
+Spectra text output notes:
+  - `k` remains the integer shell-center index used for the current shell binning
+  - `k_phy` is the physical wavenumber associated with that shell center, computed as `(2*pi/L) * k`
+  - `_comp` columns use integer-shell `k`
+  - `_comp_phy` columns use `k_phy`
   - <base>_spectra_qr_joint_pdf.pdf
 
 Slice output defaults:
@@ -374,7 +383,8 @@ The combined slice HDF5 stores:
   - all saved 2D slice arrays
   - horizontal and vertical coordinates for each slice
   - axis, plane index, plane coordinate, step, time, and source-file metadata
-  - stored full-3D global min/max colorbar limits for fields that use global scaling
+  - stored full-3D global min/max colorbar limits in the saved-value convention
+  - stored full-3D RMS values so slices can be normalized later during replotting
 
 This lets you replot slices later without recomputing the FFT/vorticity/Q-criterion/R-criterion workflow.
 
@@ -408,6 +418,9 @@ Slice colorbar scaling:
   - velocity_magnitude, vorticity-based fields, q_criterion, r_criterion, and appended scalar fields
     use the full 3D global min/max by default
   - vx, vy, and vz continue to fall back to the gathered 2D slice limits
+  - rendered slice values are unnormalized by default
+  - pass --slice-value-normalization global_rms to normalize the rendered slice plots by the stored full-volume RMS
+  - the saved slice-data HDF5 values remain raw even when the displayed plots use global_rms normalization
 
 Optional scalar field inputs:
   - pass one or more sampled-data scalar files to main.py by repeating
@@ -597,6 +610,13 @@ Example replot:
     --slice xy_center \
     --cmap viridis
 
+Replot with RMS normalization applied from the saved metadata:
+
+  python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 \
+    --field velocity_magnitude \
+    --slice xy_center \
+    --value-normalization global_rms
+
 Example scalar workflow:
 
   mpirun -n 4 python main.py velocity_sampled_data_uniform_interpolated_cycle_0.txt \
@@ -604,6 +624,8 @@ Example scalar workflow:
     --scalar-file pressure_sampled_data_uniform_interpolated_cycle_0.txt
 
 Useful controls:
+  - --value-normalization {saved,none,global_rms}
+  - --normalize
   - --vmin <value>
   - --vmax <value>
   - --width <domain width>

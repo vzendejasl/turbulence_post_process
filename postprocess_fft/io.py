@@ -174,15 +174,25 @@ def _spectra_output_stem(filename):
 
 def save_spectra(
     k_centers,
+    k_centers_phy,
     e_total,
+    e_total_phy,
     e_comp,
+    e_comp_phy,
     e_rot,
+    e_rot_phy,
     enstrophy,
+    enstrophy_phy,
     helicity,
+    helicity_phy,
     e_total_compensated,
+    e_total_compensated_phy,
     e_comp_compensated,
+    e_comp_compensated_phy,
     e_rot_compensated,
+    e_rot_compensated_phy,
     enstrophy_compensated,
+    enstrophy_compensated_phy,
     filename,
     step_number,
     time_value,
@@ -194,10 +204,10 @@ def save_spectra(
     rot_ke,
     total_enstrophy,
 ):
-    """Save spectra text plus a separate metadata text file."""
+    """Save integer-shell and physical-density spectra text files plus metadata."""
     stem = _spectra_output_stem(filename)
 
-    summary = np.column_stack(
+    integer_summary = np.column_stack(
         (
             np.asarray(k_centers, dtype=np.float64),
             np.asarray(e_total, dtype=np.float64),
@@ -212,7 +222,22 @@ def save_spectra(
         )
     )
 
-    header_labels = [
+    physical_summary = np.column_stack(
+        (
+            np.asarray(k_centers_phy, dtype=np.float64),
+            np.asarray(e_total_phy, dtype=np.float64),
+            np.asarray(e_comp_phy, dtype=np.float64),
+            np.asarray(e_rot_phy, dtype=np.float64),
+            np.asarray(enstrophy_phy, dtype=np.float64),
+            np.asarray(helicity_phy, dtype=np.float64),
+            np.asarray(e_total_compensated_phy, dtype=np.float64),
+            np.asarray(e_comp_compensated_phy, dtype=np.float64),
+            np.asarray(e_rot_compensated_phy, dtype=np.float64),
+            np.asarray(enstrophy_compensated_phy, dtype=np.float64),
+        )
+    )
+
+    integer_header_labels = [
         "k",
         "E_total",
         "E_comp",
@@ -225,11 +250,60 @@ def save_spectra(
         "Enst_comp",
     ]
     with open(f"{stem}.txt", "w", encoding="utf-8") as handle:
-        handle.write(", ".join(f"{label:>23s}" for label in header_labels) + "\n")
-        for row in summary:
+        handle.write(", ".join(f"{label:>23s}" for label in integer_header_labels) + "\n")
+        for row in integer_summary:
+            handle.write(", ".join(f"{value:>23.16e}" for value in row) + "\n")
+
+    physical_header_labels = [
+        "k_phy",
+        "E_total_phy",
+        "E_comp_phy",
+        "E_rot_phy",
+        "Enstrophy_phy",
+        "Helicity_phy",
+        "E_total_comp_phy",
+        "E_comp_comp_phy",
+        "E_rot_comp_phy",
+        "Enst_comp_phy",
+    ]
+    with open(f"{stem}_phy.txt", "w", encoding="utf-8") as handle:
+        handle.write(", ".join(f"{label:>23s}" for label in physical_header_labels) + "\n")
+        for row in physical_summary:
             handle.write(", ".join(f"{value:>23.16e}" for value in row) + "\n")
 
     with open(f"{stem}_metadata.txt", "w", encoding="utf-8") as handle:
+        handle.write(f"# Step: {step_number}, Time: {float(time_value):.16e}\n")
+        handle.write(f"# Grid: Nx={int(nx)}, Ny={int(ny)}, Nz={int(nz)}\n")
+        delta_k_phy = None
+        if len(k_centers_phy) > 1:
+            delta_k_phy = float(k_centers_phy[1] - k_centers_phy[0])
+        handle.write(
+            f"# Total KE: {float(total_ke):.16e}, "
+            f"Compressive KE: {float(comp_ke):.16e}, "
+            f"Rotational KE: {float(rot_ke):.16e}\n"
+        )
+        handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
+        handle.write("# File convention: integer-shell spectra file\n")
+        handle.write("# Spectra conventions:\n")
+        handle.write("#   k: integer shell-center index used for shell binning\n")
+        handle.write("#   E_total, E_comp, E_rot: shell-integrated kinetic-energy spectra\n")
+        handle.write("#   Enstrophy: shell-integrated enstrophy spectrum using physical-vorticity scaling\n")
+        handle.write("#   Helicity: shell-integrated helicity spectrum using physical-vorticity scaling\n")
+        handle.write("# Compensation conventions:\n")
+        handle.write("#   E_total_comp = k^(5/3) * E_total\n")
+        handle.write("#   E_comp_comp = k^(5/3) * E_comp\n")
+        handle.write("#   E_rot_comp = k^(5/3) * E_rot\n")
+        handle.write("#   Enst_comp = k^(-1/3) * Enstrophy\n")
+        handle.write(
+            "# Data columns: "
+            "k, E_total, E_comp, E_rot, Enstrophy, Helicity, "
+            "E_total_comp, E_comp_comp, E_rot_comp, Enst_comp\n"
+        )
+        if delta_k_phy is not None:
+            handle.write(f"# delta_k_phy: {float(delta_k_phy):.16e}\n")
+        handle.write("# Companion physical-density file: *_spectra_phy.txt\n")
+
+    with open(f"{stem}_phy_metadata.txt", "w", encoding="utf-8") as handle:
         handle.write(f"# Step: {step_number}, Time: {float(time_value):.16e}\n")
         handle.write(f"# Grid: Nx={int(nx)}, Ny={int(ny)}, Nz={int(nz)}\n")
         handle.write(
@@ -238,6 +312,27 @@ def save_spectra(
             f"Rotational KE: {float(rot_ke):.16e}\n"
         )
         handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
+        handle.write("# File convention: physical-wavenumber spectral-density file\n")
+        handle.write("# Spectra conventions:\n")
+        handle.write("#   k_phy: physical shell-center wavenumber, k_phy = (2*pi/L) * k\n")
+        handle.write("#   delta_k_phy: physical shell width used to convert shell sums to densities\n")
+        handle.write("#   E_total_phy = E_total / delta_k_phy\n")
+        handle.write("#   E_comp_phy = E_comp / delta_k_phy\n")
+        handle.write("#   E_rot_phy = E_rot / delta_k_phy\n")
+        handle.write("#   Enstrophy_phy = Enstrophy / delta_k_phy\n")
+        handle.write("#   Helicity_phy = Helicity / delta_k_phy\n")
+        handle.write("# Compensation conventions:\n")
+        handle.write("#   E_total_comp_phy = k_phy^(5/3) * E_total_phy\n")
+        handle.write("#   E_comp_comp_phy = k_phy^(5/3) * E_comp_phy\n")
+        handle.write("#   E_rot_comp_phy = k_phy^(5/3) * E_rot_phy\n")
+        handle.write("#   Enst_comp_phy = k_phy^(-1/3) * Enstrophy_phy\n")
+        handle.write(
+            "# Data columns: "
+            "k_phy, E_total_phy, E_comp_phy, E_rot_phy, Enstrophy_phy, Helicity_phy, "
+            "E_total_comp_phy, E_comp_comp_phy, E_rot_comp_phy, Enst_comp_phy\n"
+        )
+        if delta_k_phy is not None:
+            handle.write(f"# delta_k_phy: {float(delta_k_phy):.16e}\n")
 
 
 def save_component_spectra(
@@ -454,10 +549,11 @@ def _plot_style():
 def plot_spectra(results):
     """Plot raw and compensated spectra for one or more results."""
     with plt.rc_context(_plot_style()):
-        fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
-        raw_ax, comp_ax = axes
+        fig, axes = plt.subplots(1, 4, figsize=(24, 5.5))
+        raw_ax, comp_ax, raw_phy_ax, comp_phy_ax = axes
         for result in results:
             k_centers = result["k_centers"]
+            k_centers_phy = result["k_centers_phy"]
             step_number = result["step_number"]
             time_value = result["time_value"]
             label = rf"$\mathrm{{step}}={step_number},\ t={time_value:.6g}$"
@@ -470,6 +566,49 @@ def plot_spectra(results):
             comp_ax.semilogx(k_centers, result["E_rot_compensated"], linestyle=":", label=rf"$k^{{5/3}}E_r(k)$, {label}")
             comp_ax.semilogx(k_centers, result["Enstrophy_compensated"], linestyle="-.", label=rf"$k^{{-1/3}}\Omega(k)$, {label}")
 
+            raw_phy_ax.loglog(
+                k_centers_phy,
+                result["E_total_phy"],
+                label=rf"$E(k)/\Delta k_{{\mathrm{{phy}}}}$, {label}",
+            )
+            raw_phy_ax.loglog(
+                k_centers_phy,
+                result["E_comp_phy"],
+                linestyle="--",
+                label=rf"$E_c(k)/\Delta k_{{\mathrm{{phy}}}}$, {label}",
+            )
+            raw_phy_ax.loglog(
+                k_centers_phy,
+                result["E_rot_phy"],
+                linestyle=":",
+                label=rf"$E_r(k)/\Delta k_{{\mathrm{{phy}}}}$, {label}",
+            )
+            raw_phy_ax.loglog(
+                k_centers_phy,
+                result["Enstrophy_phy"],
+                linestyle="-.",
+                label=rf"$\Omega(k)/\Delta k_{{\mathrm{{phy}}}}$, {label}",
+            )
+
+            comp_phy_ax.semilogx(
+                k_centers_phy,
+                result["E_comp_compensated_phy"],
+                linestyle="--",
+                label=rf"$k_{{\mathrm{{phy}}}}^{{5/3}}E_c(k)/\Delta k_{{\mathrm{{phy}}}}$, {label}",
+            )
+            comp_phy_ax.semilogx(
+                k_centers_phy,
+                result["E_rot_compensated_phy"],
+                linestyle=":",
+                label=rf"$k_{{\mathrm{{phy}}}}^{{5/3}}E_r(k)/\Delta k_{{\mathrm{{phy}}}}$, {label}",
+            )
+            comp_phy_ax.semilogx(
+                k_centers_phy,
+                result["Enstrophy_compensated_phy"],
+                linestyle="-.",
+                label=rf"$k_{{\mathrm{{phy}}}}^{{-1/3}}\Omega(k)/\Delta k_{{\mathrm{{phy}}}}$, {label}",
+            )
+
         raw_ax.set_xlabel(r"$k$")
         raw_ax.set_ylabel(r"$E(k),\ \Omega(k)$")
         raw_ax.grid(True, which="both")
@@ -479,6 +618,16 @@ def plot_spectra(results):
         comp_ax.set_ylabel(r"Compensated spectra")
         comp_ax.grid(True, which="both")
         comp_ax.legend(fontsize=8)
+
+        raw_phy_ax.set_xlabel(r"$k_{\mathrm{phy}}$")
+        raw_phy_ax.set_ylabel(r"$E(k)/\Delta k_{\mathrm{phy}},\ \Omega(k)/\Delta k_{\mathrm{phy}}$")
+        raw_phy_ax.grid(True, which="both")
+        raw_phy_ax.legend(fontsize=8)
+
+        comp_phy_ax.set_xlabel(r"$k_{\mathrm{phy}}$")
+        comp_phy_ax.set_ylabel(r"Compensated spectra")
+        comp_phy_ax.grid(True, which="both")
+        comp_phy_ax.legend(fontsize=8)
 
         fig.tight_layout()
         plt.show()

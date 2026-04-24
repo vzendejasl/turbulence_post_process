@@ -300,6 +300,26 @@ def _normalization_mode(normalize_requested, attrs):
     return "none"
 
 
+def _value_normalization_scale(mode, attrs):
+    """Return the reference scale for one saved-value normalization mode."""
+    resolved = str(mode or "none").strip().lower()
+    if resolved == "none":
+        return 1.0
+    if resolved == "global_rms":
+        rms = float(attrs.get("global_rms", 0.0))
+        return rms if abs(rms) > 1.0e-30 else None
+    return None
+
+
+def _resolve_value_normalization_mode(requested_mode, attrs):
+    """Resolve a requested saved-value normalization against the file metadata."""
+    saved_mode = str(attrs.get("value_normalization", "none")).strip().lower()
+    requested = str(requested_mode or "saved").strip().lower()
+    if requested == "saved":
+        return saved_mode
+    return requested
+
+
 def _display_normalization_label(value_normalization, extra_normalization):
     """Return one combined normalization description string."""
     modes = []
@@ -314,24 +334,50 @@ def _display_normalization_label(value_normalization, extra_normalization):
     return "+".join(modes)
 
 
-def _apply_normalization(saved, normalize, print_stats=False):
+def _apply_normalization(saved, value_normalization_mode, normalize, print_stats=False):
     """Return a copy of saved slice data with optional normalization applied."""
-    values_raw = _prepare_plot_values(saved["values"])
+    values_stored = _prepare_plot_values(saved["values"])
     attrs = dict(saved["attrs"])
-    values = values_raw.copy()
+    values = values_stored.copy()
     mode = _normalization_mode(normalize, attrs)
-    value_normalization = str(attrs.get("value_normalization", "none")).strip()
+    saved_value_normalization = str(attrs.get("value_normalization", "none")).strip().lower()
+    value_normalization = _resolve_value_normalization_mode(value_normalization_mode, attrs)
     base_plot_label = attrs.get("base_plot_label", attrs.get("plot_label", attrs.get("field_name", "")))
-    stored_limits_raw = _stored_global_limits(attrs)
+    stored_limits_saved = _stored_global_limits(attrs)
+    saved_scale = _value_normalization_scale(saved_value_normalization, attrs)
+    target_scale = _value_normalization_scale(value_normalization, attrs)
+
+    if saved_scale is None:
+        saved_scale = 1.0
+        saved_value_normalization = "none"
+        if print_stats:
+            print("Saved slice metadata requested RMS normalization, but no usable global RMS was stored. Treating values as unnormalized.")
+
+    if target_scale is None:
+        if print_stats:
+            print("Requested RMS normalization, but no usable global RMS was stored. Leaving values unchanged.")
+        value_normalization = saved_value_normalization
+        target_scale = saved_scale
+
+    conversion_factor = float(saved_scale) / float(target_scale)
+    values = np.round(values_stored * conversion_factor, decimals=10)
+    stored_limits_raw = None
+    if stored_limits_saved is not None:
+        stored_limits_raw = (
+            float(stored_limits_saved[0] * conversion_factor),
+            float(stored_limits_saved[1] * conversion_factor),
+        )
 
     if print_stats:
-        if stored_limits_raw is None:
+        if stored_limits_saved is None:
             print("Stored global 3D colorbar limits: unavailable; falling back to slice-local values.")
         else:
-            print(f"Stored global 3D colorbar min: {stored_limits_raw[0]:.6g}")
-            print(f"Stored global 3D colorbar max: {stored_limits_raw[1]:.6g}")
+            print(f"Stored global 3D colorbar min: {stored_limits_saved[0]:.6g}")
+            print(f"Stored global 3D colorbar max: {stored_limits_saved[1]:.6g}")
         if "global_rms" in attrs:
             print(f"Stored global 3D RMS normalization: {float(attrs['global_rms']):.6g}")
+        print(f"Saved value normalization: {saved_value_normalization}")
+        print(f"Display value normalization: {value_normalization}")
 
     if mode == "none":
         attrs["plot_label"] = format_plot_label(
@@ -339,9 +385,14 @@ def _apply_normalization(saved, normalize, print_stats=False):
             value_normalization=value_normalization,
             extra_normalization="none",
         )
+        attrs["saved_value_normalization"] = saved_value_normalization
+        attrs["value_normalization"] = value_normalization
         attrs["normalization"] = "none"
         attrs["normalization_factor"] = 1.0
         attrs["display_normalization"] = _display_normalization_label(value_normalization, "none")
+        if stored_limits_raw is not None:
+            attrs["global_min"] = float(stored_limits_raw[0])
+            attrs["global_max"] = float(stored_limits_raw[1])
         if normalize and print_stats:
             print(
                 f"Normalization requested, but field '{attrs.get('field_name', '')}' "
@@ -364,12 +415,14 @@ def _apply_normalization(saved, normalize, print_stats=False):
         L = 1.0 / (2.0 * np.pi)
         reference_scale = U0 / L
         normalization_factor = 1.0 / reference_scale
-        values = np.round(values_raw * normalization_factor, decimals=10)
+        values = np.round(values * normalization_factor, decimals=10)
         attrs["plot_label"] = format_plot_label(
             base_plot_label,
             value_normalization=value_normalization,
             extra_normalization=mode,
         )
+        attrs["saved_value_normalization"] = saved_value_normalization
+        attrs["value_normalization"] = value_normalization
         attrs["normalization"] = mode
         attrs["normalization_factor"] = normalization_factor
         attrs["normalization_reference_scale"] = reference_scale
@@ -401,12 +454,14 @@ def _apply_normalization(saved, normalize, print_stats=False):
         U0 = 1.0
         reference_scale = U0
         normalization_factor = 1.0 / reference_scale
-        values = np.round(values_raw * normalization_factor, decimals=10)
+        values = np.round(values * normalization_factor, decimals=10)
         attrs["plot_label"] = format_plot_label(
             base_plot_label,
             value_normalization=value_normalization,
             extra_normalization=mode,
         )
+        attrs["saved_value_normalization"] = saved_value_normalization
+        attrs["value_normalization"] = value_normalization
         attrs["normalization"] = mode
         attrs["normalization_factor"] = normalization_factor
         attrs["normalization_reference_scale"] = reference_scale
@@ -550,16 +605,26 @@ def output_stem(source_path, field_name):
     return f"{field_name}_{base}"
 
 
-def normalization_suffix(normalize):
-    """Return a filename suffix for a normalization preset."""
-    mode = _normalization_mode(normalize, {"field_family": ""}) if isinstance(normalize, bool) else normalize
-    if mode == "none":
-        return ""
+def normalization_suffix(value_normalization="saved", normalize="none", saved_attrs=None):
+    """Return a filename suffix for one combined normalization preset."""
+    attrs = saved_attrs or {}
+    parts = []
+
+    value_mode = _resolve_value_normalization_mode(value_normalization, attrs)
+    if value_mode != "none":
+        parts.append(value_mode)
+
+    mode = _normalization_mode(normalize, attrs) if isinstance(normalize, bool) else normalize
     if mode == "vorticity":
-        return "_vorticity_star"
-    if mode == "velocity":
-        return "_velocity_star"
-    return f"_{mode}"
+        parts.append("vorticity_star")
+    elif mode == "velocity":
+        parts.append("velocity_star")
+    elif mode not in {"", "none", None}:
+        parts.append(str(mode))
+
+    if not parts:
+        return ""
+    return "_" + "_".join(parts)
 
 
 def output_source_path(slice_file, field_name, saved_attrs):
@@ -599,16 +664,35 @@ def default_output_directory(slice_file, slice_tag=None):
     return str(output_dir)
 
 
-def default_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none", output_tag=None):
+def default_output_name(
+    slice_file,
+    field_name,
+    slice_tag,
+    output_format,
+    saved_attrs,
+    value_normalization="saved",
+    normalize="none",
+    output_tag=None,
+):
     """Return the default output path for one replotted saved slice."""
     output_dir = default_output_directory(slice_file, slice_tag=slice_tag)
-    mode = _normalization_mode(normalize, saved_attrs) if isinstance(normalize, bool) else normalize
-    base = output_stem(output_source_path(slice_file, field_name, saved_attrs), field_name) + normalization_suffix(mode)
+    base = (
+        output_stem(output_source_path(slice_file, field_name, saved_attrs), field_name)
+        + normalization_suffix(value_normalization=value_normalization, normalize=normalize, saved_attrs=saved_attrs)
+    )
     tag = slice_tag if output_tag is None else output_tag
     return os.path.join(output_dir, f"{base}_{tag}.{output_format}")
 
 
-def default_comparison_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none"):
+def default_comparison_output_name(
+    slice_file,
+    field_name,
+    slice_tag,
+    output_format,
+    saved_attrs,
+    value_normalization="saved",
+    normalize="none",
+):
     """Return the default output path for one copied comparison plot."""
     return default_output_name(
         slice_file,
@@ -616,12 +700,20 @@ def default_comparison_output_name(slice_file, field_name, slice_tag, output_for
         slice_tag,
         output_format,
         saved_attrs,
+        value_normalization=value_normalization,
         normalize=normalize,
         output_tag=f"{slice_tag}_contour_compare",
     )
 
 
-def default_comparison_metadata_name(slice_file, field_name, slice_tag, saved_attrs, normalize="none"):
+def default_comparison_metadata_name(
+    slice_file,
+    field_name,
+    slice_tag,
+    saved_attrs,
+    value_normalization="saved",
+    normalize="none",
+):
     """Return the default output path for one copied comparison metadata file."""
     output_path = default_comparison_output_name(
         slice_file,
@@ -629,13 +721,22 @@ def default_comparison_metadata_name(slice_file, field_name, slice_tag, saved_at
         slice_tag,
         "pdf",
         saved_attrs,
+        value_normalization=value_normalization,
         normalize=normalize,
     )
     stem, _ = os.path.splitext(output_path)
     return f"{stem}_metadata.txt"
 
 
-def default_zoom_contour_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none"):
+def default_zoom_contour_output_name(
+    slice_file,
+    field_name,
+    slice_tag,
+    output_format,
+    saved_attrs,
+    value_normalization="saved",
+    normalize="none",
+):
     """Return the default output path for one zoomed contour plot."""
     return default_output_name(
         slice_file,
@@ -643,12 +744,21 @@ def default_zoom_contour_output_name(slice_file, field_name, slice_tag, output_f
         slice_tag,
         output_format,
         saved_attrs,
+        value_normalization=value_normalization,
         normalize=normalize,
         output_tag=f"{slice_tag}_contour_zoom",
     )
 
 
-def default_zoom_comparison_output_name(slice_file, field_name, slice_tag, output_format, saved_attrs, normalize="none"):
+def default_zoom_comparison_output_name(
+    slice_file,
+    field_name,
+    slice_tag,
+    output_format,
+    saved_attrs,
+    value_normalization="saved",
+    normalize="none",
+):
     """Return the default output path for one zoomed comparison contour plot."""
     return default_output_name(
         slice_file,
@@ -656,12 +766,20 @@ def default_zoom_comparison_output_name(slice_file, field_name, slice_tag, outpu
         slice_tag,
         output_format,
         saved_attrs,
+        value_normalization=value_normalization,
         normalize=normalize,
         output_tag=f"{slice_tag}_contour_compare_zoom",
     )
 
 
-def default_zoom_comparison_metadata_name(slice_file, field_name, slice_tag, saved_attrs, normalize="none"):
+def default_zoom_comparison_metadata_name(
+    slice_file,
+    field_name,
+    slice_tag,
+    saved_attrs,
+    value_normalization="saved",
+    normalize="none",
+):
     """Return the default output path for one zoomed comparison metadata file."""
     output_path = default_zoom_comparison_output_name(
         slice_file,
@@ -669,6 +787,7 @@ def default_zoom_comparison_metadata_name(slice_file, field_name, slice_tag, sav
         slice_tag,
         "pdf",
         saved_attrs,
+        value_normalization=value_normalization,
         normalize=normalize,
     )
     stem, _ = os.path.splitext(output_path)
@@ -772,6 +891,7 @@ def render_saved_slice_contour_matplotlib(
     contour_values,
     contour_filled,
     contour_color,
+    value_normalization_mode,
     normalize,
     interpolate,
     zoom_window=None,
@@ -784,7 +904,12 @@ def render_saved_slice_contour_matplotlib(
     """
     import matplotlib.pyplot as plt
 
-    saved = _apply_normalization(_load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
+    saved = _apply_normalization(
+        _load_saved_slice(slice_file, field_name, slice_tag),
+        value_normalization_mode,
+        normalize,
+        print_stats=False,
+    )
     attrs = saved["attrs"]
     values = _prepare_plot_values(saved["values"])
     h_coords = np.asarray(saved["coord_horizontal"], dtype=np.float64)
@@ -827,6 +952,7 @@ def render_saved_slice_contour_matplotlib(
         slice_tag,
         output_format,
         attrs,
+        value_normalization=value_normalization_mode,
         normalize=normalize,
         output_tag=f"{slice_tag}_contour",
     )
@@ -854,6 +980,7 @@ def render_saved_slice_contour_yt(
     contour_values,
     contour_filled,
     contour_color,
+    value_normalization_mode,
     normalize,
     interpolate,
     zoom_window=None,
@@ -861,7 +988,12 @@ def render_saved_slice_contour_yt(
     """Render a separate contour plot for one saved slice using yt."""
     import yt
 
-    saved = _apply_normalization(_load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
+    saved = _apply_normalization(
+        _load_saved_slice(slice_file, field_name, slice_tag),
+        value_normalization_mode,
+        normalize,
+        print_stats=False,
+    )
     dataset, yt_field, saved = build_yt_slice_dataset(slice_file, field_name, slice_tag, saved=saved)
     values = _prepare_plot_values(saved["values"])
     attrs = saved["attrs"]
@@ -873,6 +1005,7 @@ def render_saved_slice_contour_yt(
         slice_tag,
         output_format,
         attrs,
+        value_normalization=value_normalization_mode,
         normalize=normalize,
         output_tag=f"{slice_tag}_contour",
     )
@@ -948,6 +1081,7 @@ def render_saved_slice_contour(
     contour_filled,
     contour_color,
     contour_backend,
+    value_normalization_mode,
     normalize,
     interpolate,
     zoom_window=None,
@@ -971,6 +1105,7 @@ def render_saved_slice_contour(
             contour_values,
             contour_filled,
             contour_color,
+            value_normalization_mode,
             normalize,
             interpolate,
             zoom_window=zoom_window,
@@ -995,6 +1130,7 @@ def render_saved_slice_contour(
             contour_values,
             contour_filled,
             contour_color,
+            value_normalization_mode,
             normalize,
             interpolate,
             zoom_window=zoom_window,
@@ -1020,6 +1156,7 @@ def render_saved_slice_contour(
             contour_values,
             contour_filled,
             contour_color,
+            value_normalization_mode,
             normalize,
             interpolate,
             zoom_window=zoom_window,
@@ -1041,6 +1178,7 @@ def render_compared_contours(
     contour_levels,
     contour_values,
     contour_color,
+    value_normalization_mode,
     normalize,
     interpolate,
     contour_filled=False,
@@ -1065,7 +1203,12 @@ def render_compared_contours(
     reference_axes = None
 
     for slice_file in slice_files:
-        saved = _apply_normalization(_load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=False)
+        saved = _apply_normalization(
+            _load_saved_slice(slice_file, field_name, slice_tag),
+            value_normalization_mode,
+            normalize,
+            print_stats=False,
+        )
         attrs = saved["attrs"]
         values = _prepare_plot_values(saved["values"])
         horizontal_coords = np.asarray(saved["coord_horizontal"], dtype=np.float64)
@@ -1212,6 +1355,7 @@ def render_compared_contours(
                 slice_tag,
                 output_format,
                 item["attrs"],
+                value_normalization=value_normalization_mode,
                 normalize=normalize,
             )
             for item in prepared
@@ -1223,6 +1367,7 @@ def render_compared_contours(
                 field_name,
                 slice_tag,
                 item["attrs"],
+                value_normalization=value_normalization_mode,
                 normalize=normalize,
             )
             for item in prepared
@@ -1254,13 +1399,19 @@ def render_saved_slice(
     plot,
     dpi,
     figure_size,
+    value_normalization_mode,
     normalize,
     interpolate,
 ):
     """Render one saved slice plane to disk and/or screen with optional yt interpolation."""
     import yt
 
-    saved = _apply_normalization(_load_saved_slice(slice_file, field_name, slice_tag), normalize, print_stats=True)
+    saved = _apply_normalization(
+        _load_saved_slice(slice_file, field_name, slice_tag),
+        value_normalization_mode,
+        normalize,
+        print_stats=True,
+    )
     dataset, yt_field, saved = build_yt_slice_dataset(slice_file, field_name, slice_tag, saved=saved)
     values = _prepare_plot_values(saved["values"])
 
@@ -1271,6 +1422,7 @@ def render_saved_slice(
         slice_tag,
         output_format,
         attrs,
+        value_normalization=value_normalization_mode,
         normalize=normalize,
     )
     data_min, data_max, zmin, zmax, limits_source = _resolve_saved_color_limits(saved, vmin=vmin, vmax=vmax)
@@ -1366,6 +1518,7 @@ def print_saved_slice_metadata(slice_file, field_name, slice_tag):
         print(f"Stored global 3D colorbar max: {float(attrs['global_max']):.6g}")
     if "global_rms" in attrs:
         print(f"Stored global 3D RMS normalization: {float(attrs['global_rms']):.6g}")
+    print(f"Stored value normalization: {str(attrs.get('value_normalization', 'none'))}")
     print(f"Values shape: {saved['values'].shape}")
 
 
@@ -1418,6 +1571,7 @@ def process_slice_file(slice_file, args):
             args.plot,
             args.dpi,
             args.figsize,
+            args.value_normalization,
             args.normalize,
             args.interpolate,
         )
@@ -1441,6 +1595,7 @@ def process_slice_file(slice_file, args):
                 args.contour_filled,
                 args.contour_color,
                 args.contour_backend,
+                args.value_normalization,
                 args.normalize,
                 args.interpolate,
             )
@@ -1451,6 +1606,7 @@ def process_slice_file(slice_file, args):
                 slice_tag,
                 args.format,
                 saved["attrs"],
+                value_normalization=args.value_normalization,
                 normalize=args.normalize,
             )
             render_saved_slice_contour(
@@ -1471,6 +1627,7 @@ def process_slice_file(slice_file, args):
                 args.contour_filled,
                 args.contour_color,
                 args.contour_backend,
+                args.value_normalization,
                 args.normalize,
                 args.interpolate,
                 zoom_window=args.zoom_window,
@@ -1502,9 +1659,15 @@ def main():
     parser.add_argument("--dpi", type=int, default=600, help="Raster save DPI. Default is 600.")
     parser.add_argument("--figsize", type=float, default=8.0, help="Square figure size in inches. Default is 8.0.")
     parser.add_argument(
+        "--value-normalization",
+        default="saved",
+        choices=["saved", "none", "global_rms"],
+        help="Saved-value normalization to display on replot: 'saved' preserves the slice file's stored normalization, 'none' shows raw values, and 'global_rms' applies the stored full-volume RMS when available.",
+    )
+    parser.add_argument(
         "--normalize",
         action="store_true",
-        help="Apply an extra TGV-style normalization on top of the saved slice values: vorticity uses U0/L and velocity uses U0. The colorbar label reflects both the saved normalization and this extra scaling.",
+        help="Apply an extra TGV-style normalization on top of the selected value normalization: vorticity uses U0/L and velocity uses U0.",
     )
     parser.add_argument(
         "--yt-info",
@@ -1610,6 +1773,7 @@ def main():
                 args.contour_levels,
                 args.contour_values,
                 args.contour_color,
+                args.value_normalization,
                 args.normalize,
                 args.interpolate,
                 contour_filled=args.contour_filled,
@@ -1625,6 +1789,7 @@ def main():
                         slice_tag,
                         args.format,
                         saved["attrs"],
+                        value_normalization=args.value_normalization,
                         normalize=args.normalize,
                     )
                 )
@@ -1634,6 +1799,7 @@ def main():
                         args.field,
                         slice_tag,
                         saved["attrs"],
+                        value_normalization=args.value_normalization,
                         normalize=args.normalize,
                     )
                 )
@@ -1652,6 +1818,7 @@ def main():
                 args.contour_levels,
                 args.contour_values,
                 args.contour_color,
+                args.value_normalization,
                 args.normalize,
                 args.interpolate,
                 contour_filled=args.contour_filled,
