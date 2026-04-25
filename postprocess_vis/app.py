@@ -320,6 +320,7 @@ def compute_local_derived_fields(
     comm,
     backend_name,
     include_vorticity=False,
+    include_divergence=False,
     include_qcriterion=False,
     include_rcriterion=False,
     include_density_gradient=False,
@@ -341,7 +342,7 @@ def compute_local_derived_fields(
     }
 
     vx_k = vy_k = vz_k = None
-    if include_vorticity or include_qcriterion or include_rcriterion:
+    if include_vorticity or include_divergence or include_qcriterion or include_rcriterion:
         local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
         vx_k = forward_field(plan, local_vx).reshape(local_shape, order="C")
         vy_k = forward_field(plan, local_vy).reshape(local_shape, order="C")
@@ -361,7 +362,7 @@ def compute_local_derived_fields(
         derived_fields["omega_z"] = omega_z
         derived_fields["vorticity_magnitude"] = np.sqrt(omega_x**2 + omega_y**2 + omega_z**2)
 
-    if include_qcriterion or include_rcriterion:
+    if include_divergence or include_qcriterion or include_rcriterion:
         dux_dx = backward_field(plan, 1j * KX * vx_k, local_shape)
         dux_dy = backward_field(plan, 1j * KY * vx_k, local_shape)
         dux_dz = backward_field(plan, 1j * KZ * vx_k, local_shape)
@@ -373,6 +374,8 @@ def compute_local_derived_fields(
         duz_dz = backward_field(plan, 1j * KZ * vz_k, local_shape)
 
         div_u = dux_dx + duy_dy + duz_dz
+        if include_divergence:
+            derived_fields["div_u"] = div_u
         trace_grad_u_sq = (
             dux_dx * dux_dx + dux_dy * duy_dx + dux_dz * duz_dx
             + duy_dx * dux_dy + duy_dy * duy_dy + duy_dz * duz_dy
@@ -761,6 +764,7 @@ def run_visualization(
         raise ValueError("--output can only be used when rendering a single slice.")
 
     needs_vorticity = any(spec[3] == "vorticity" for spec in field_specs)
+    needs_divergence = any(spec[3] == "divergence" for spec in field_specs)
     needs_qcriterion = any(spec[3] == "qcriterion" for spec in field_specs)
     needs_rcriterion = any(spec[3] == "rcriterion" for spec in field_specs)
     needs_density_gradient = any(spec[3] == "density_gradient" for spec in field_specs)
@@ -792,10 +796,12 @@ def run_visualization(
         comm.Barrier()
         log_rank0(rank, f"Initialized slice-data file in {time.perf_counter() - init_start:.2f}s")
 
-    if needs_vorticity or needs_qcriterion or needs_rcriterion or needs_density_gradient:
+    if needs_vorticity or needs_divergence or needs_qcriterion or needs_rcriterion or needs_density_gradient:
         derived_start = time.perf_counter()
         if needs_vorticity:
             log_rank0(rank, "Computing distributed vorticity field with HeFFTe inverse FFT...")
+        if needs_divergence:
+            log_rank0(rank, "Computing distributed velocity-divergence field with HeFFTe inverse FFT...")
         if needs_qcriterion:
             log_rank0(rank, "Computing distributed Q-criterion field with HeFFTe inverse FFT...")
         if needs_rcriterion:
@@ -808,6 +814,7 @@ def run_visualization(
             comm,
             backend_name,
             include_vorticity=needs_vorticity,
+            include_divergence=needs_divergence,
             include_qcriterion=needs_qcriterion,
             include_rcriterion=needs_rcriterion,
             include_density_gradient=needs_density_gradient,
@@ -816,6 +823,8 @@ def run_visualization(
         comm.Barrier()
         if needs_vorticity:
             log_rank0(rank, f"Completed distributed vorticity field in {time.perf_counter() - derived_start:.2f}s")
+        if needs_divergence:
+            log_rank0(rank, f"Completed distributed velocity-divergence field in {time.perf_counter() - derived_start:.2f}s")
         if needs_qcriterion:
             log_rank0(rank, f"Completed distributed Q-criterion field in {time.perf_counter() - derived_start:.2f}s")
         if needs_rcriterion:

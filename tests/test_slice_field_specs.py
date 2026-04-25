@@ -34,15 +34,18 @@ class TestSliceFieldSpecs(unittest.TestCase):
             field_lookup = build_available_field_specs(hf["fields"])
 
         self.assertIn("density", field_lookup)
+        self.assertIn("div_u", field_lookup)
+        self.assertEqual(field_lookup["div_u"][3], "divergence")
         self.assertIn("density_gradient_magnitude", field_lookup)
         self.assertEqual(field_lookup["density_gradient_magnitude"][3], "density_gradient")
 
         requested_fields = default_requested_field_names(field_lookup)
         self.assertEqual(
-            requested_fields[:5],
+            requested_fields[:6],
             [
                 "velocity_magnitude",
                 "vorticity_magnitude",
+                "div_u",
                 "q_criterion",
                 "r_criterion",
                 "density_gradient_magnitude",
