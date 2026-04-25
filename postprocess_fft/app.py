@@ -6,6 +6,7 @@ import argparse
 
 import h5py
 import numpy as np
+from mpi4py import MPI
 
 from .common import global_mean_energy
 from .common import heffte
@@ -268,6 +269,7 @@ def analyze_file_parallel(
     omega_y = backward_field(plan, omega_y_k, local_shape)
     omega_z = backward_field(plan, omega_z_k, local_shape)
     vorticity_ke = global_mean_energy(omega_x, omega_y, omega_z, global_points, comm)
+    wiwi_mean = 2.0 * vorticity_ke
     enstrophy_rel_error = abs(vorticity_ke - total_enstrophy) / max(abs(total_enstrophy), 1.0e-30)
 
     if root:
@@ -292,6 +294,28 @@ def analyze_file_parallel(
     duz_dx = backward_field(plan, 1j * KX * vz_k, local_shape)
     duz_dy = backward_field(plan, 1j * KY * vz_k, local_shape)
     duz_dz = backward_field(plan, 1j * KZ * vz_k, local_shape)
+
+    s11 = dux_dx
+    s22 = duy_dy
+    s33 = duz_dz
+    s12 = 0.5 * (dux_dy + duy_dx)
+    s13 = 0.5 * (dux_dz + duz_dx)
+    s23 = 0.5 * (duy_dz + duz_dy)
+    local_sijsij = np.sum(
+        s11**2 + s22**2 + s33**2 + 2.0 * (s12**2 + s13**2 + s23**2),
+        dtype=np.float64,
+    )
+    sijsij_mean = comm.allreduce(local_sijsij, op=MPI.SUM) / float(global_points)
+    strain_enstrophy_rel_error = abs(sijsij_mean - total_enstrophy) / max(abs(total_enstrophy), 1.0e-30)
+    strain_vorticity_rel_error = abs(2.0 * sijsij_mean - wiwi_mean) / max(abs(wiwi_mean), 1.0e-30)
+
+    if root:
+        print("Strain-vorticity diagnostic:")
+        print(f"  <SijSij>: {sijsij_mean:.8f}")
+        print(f"  <wiwi>: {wiwi_mean:.8f}")
+        print(f"  2 * <SijSij>: {2.0 * sijsij_mean:.8f}")
+        print(f"  Relative error in <SijSij> vs enstrophy: {strain_enstrophy_rel_error:.8e}")
+        print(f"  Relative error in 2<SijSij> vs <wiwi>: {strain_vorticity_rel_error:.8e}")
 
     qr_joint_pdf = compute_qr_joint_pdf(
         dux_dx,
@@ -345,6 +369,10 @@ def analyze_file_parallel(
         comp_ke = zero_near_zero_scalar(comp_ke)
         rot_ke = zero_near_zero_scalar(rot_ke)
         total_enstrophy = zero_near_zero_scalar(total_enstrophy)
+        wiwi_mean = zero_near_zero_scalar(wiwi_mean)
+        sijsij_mean = zero_near_zero_scalar(sijsij_mean)
+        strain_enstrophy_rel_error = zero_near_zero_scalar(strain_enstrophy_rel_error)
+        strain_vorticity_rel_error = zero_near_zero_scalar(strain_vorticity_rel_error)
         third_order_result = None
         if compute_structure_functions:
             max_r_index = shape[0] if structure_function_full_domain else shape[0] // 2
@@ -472,6 +500,10 @@ def analyze_file_parallel(
             comp_ke,
             rot_ke,
             total_enstrophy,
+            sijsij_mean=sijsij_mean,
+            wiwi_mean=wiwi_mean,
+            strain_enstrophy_rel_error=strain_enstrophy_rel_error,
+            strain_vorticity_rel_error=strain_vorticity_rel_error,
         )
         save_component_spectra(
             k_centers,
@@ -554,6 +586,10 @@ def analyze_file_parallel(
             "Enstrophy_compensated_phy": Enst_comp_phy,
             "step_number": step_number,
             "time_value": time_value,
+            "SijSij_mean": sijsij_mean,
+            "wiwi_mean": wiwi_mean,
+            "strain_enstrophy_rel_error": strain_enstrophy_rel_error,
+            "strain_vorticity_rel_error": strain_vorticity_rel_error,
             "r_values": r_values,
             "S_L": structure_function_longitudinal,
             "structure_function_path": structure_function_path,

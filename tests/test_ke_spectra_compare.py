@@ -79,6 +79,10 @@ def collect_case_metrics(path: Path) -> dict[str, np.ndarray | float] | None:
             "enstrophy_spectrum": np.asarray(table[:, 4], dtype=np.float64),
             "spectral_total_ke": float(np.sum(table[:, 1], dtype=np.float64)),
             "spectral_total_enstrophy": float(np.sum(table[:, 4], dtype=np.float64)),
+            "SijSij_mean": float(result["SijSij_mean"]),
+            "wiwi_mean": float(result["wiwi_mean"]),
+            "strain_enstrophy_rel_error": float(result["strain_enstrophy_rel_error"]),
+            "strain_vorticity_rel_error": float(result["strain_vorticity_rel_error"]),
         }
 
 
@@ -96,6 +100,24 @@ class TestKESpectraComparison(unittest.TestCase):
                 self.assertTrue(np.isfinite(metrics["spectral_total_enstrophy"]))
                 self.assertGreaterEqual(metrics["spectral_total_ke"], 0.0)
                 self.assertGreaterEqual(metrics["spectral_total_enstrophy"], 0.0)
+
+    def test_strain_vorticity_diagnostic_is_consistent(self) -> None:
+        rank = MPI.COMM_WORLD.rank
+        for case_name in sorted(DATA_CASES):
+            with self.subTest(case=case_name):
+                metrics = collect_case_metrics(DATA_CASES[case_name])
+                if rank != 0:
+                    continue
+
+                assert metrics is not None
+                self.assertTrue(np.isfinite(metrics["SijSij_mean"]))
+                self.assertTrue(np.isfinite(metrics["wiwi_mean"]))
+                self.assertTrue(np.isfinite(metrics["strain_enstrophy_rel_error"]))
+                self.assertTrue(np.isfinite(metrics["strain_vorticity_rel_error"]))
+                self.assertGreaterEqual(metrics["SijSij_mean"], 0.0)
+                self.assertGreaterEqual(metrics["wiwi_mean"], 0.0)
+                self.assertLess(metrics["strain_enstrophy_rel_error"], 1.0e-10)
+                self.assertLess(metrics["strain_vorticity_rel_error"], 1.0e-10)
 
     def test_report_full_spectra_relative_l2_errors(self) -> None:
         sample_metrics = collect_case_metrics(DATA_CASES["sample_txt"])

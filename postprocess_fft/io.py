@@ -203,6 +203,10 @@ def save_spectra(
     comp_ke,
     rot_ke,
     total_enstrophy,
+    sijsij_mean=None,
+    wiwi_mean=None,
+    strain_enstrophy_rel_error=None,
+    strain_vorticity_rel_error=None,
 ):
     """Save integer-shell and physical-density spectra text files plus metadata."""
     stem = _spectra_output_stem(filename)
@@ -283,6 +287,20 @@ def save_spectra(
             f"Rotational KE: {float(rot_ke):.16e}\n"
         )
         handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
+        if sijsij_mean is not None:
+            handle.write(f"# Mean <SijSij>: {float(sijsij_mean):.16e}\n")
+        if wiwi_mean is not None:
+            handle.write(f"# Mean <wiwi>: {float(wiwi_mean):.16e}\n")
+        if strain_enstrophy_rel_error is not None:
+            handle.write(
+                "# Relative error in <SijSij> vs enstrophy: "
+                f"{float(strain_enstrophy_rel_error):.16e}\n"
+            )
+        if strain_vorticity_rel_error is not None:
+            handle.write(
+                "# Relative error in 2<SijSij> vs <wiwi>: "
+                f"{float(strain_vorticity_rel_error):.16e}\n"
+            )
         handle.write("# File convention: integer-shell spectra file\n")
         handle.write("# Spectra conventions:\n")
         handle.write("#   k: integer shell-center index used for shell binning\n")
@@ -312,6 +330,20 @@ def save_spectra(
             f"Rotational KE: {float(rot_ke):.16e}\n"
         )
         handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
+        if sijsij_mean is not None:
+            handle.write(f"# Mean <SijSij>: {float(sijsij_mean):.16e}\n")
+        if wiwi_mean is not None:
+            handle.write(f"# Mean <wiwi>: {float(wiwi_mean):.16e}\n")
+        if strain_enstrophy_rel_error is not None:
+            handle.write(
+                "# Relative error in <SijSij> vs enstrophy: "
+                f"{float(strain_enstrophy_rel_error):.16e}\n"
+            )
+        if strain_vorticity_rel_error is not None:
+            handle.write(
+                "# Relative error in 2<SijSij> vs <wiwi>: "
+                f"{float(strain_vorticity_rel_error):.16e}\n"
+            )
         handle.write("# File convention: physical-wavenumber spectral-density file\n")
         handle.write("# Spectra conventions:\n")
         handle.write("#   k_phy: physical shell-center wavenumber, k_phy = (2*pi/L) * k\n")
