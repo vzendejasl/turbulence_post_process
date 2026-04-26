@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 DENSITY_DATASET_NAME = "density"
+PRESSURE_DATASET_NAME = "pressure"
 DENSITY_GRADIENT_FIELD_NAME = "density_gradient_magnitude"
 DENSITY_GRADIENT_FIELD_SPEC = (
     DENSITY_GRADIENT_FIELD_NAME,
@@ -10,6 +11,19 @@ DENSITY_GRADIENT_FIELD_SPEC = (
     r"$|\nabla \rho|$",
     "density_gradient",
 )
+SOUND_SPEED_FIELD_NAME = "sound_speed"
+MACH_NUMBER_FIELD_NAME = "mach_number"
+TURBULENT_MACH_FIELD_NAME = "turbulent_mach_number"
+THERMO_DERIVED_FIELD_NAMES = (
+    SOUND_SPEED_FIELD_NAME,
+    MACH_NUMBER_FIELD_NAME,
+    TURBULENT_MACH_FIELD_NAME,
+)
+THERMO_DERIVED_FIELD_SPECS = {
+    SOUND_SPEED_FIELD_NAME: (SOUND_SPEED_FIELD_NAME, SOUND_SPEED_FIELD_NAME, r"$c$", "thermo"),
+    MACH_NUMBER_FIELD_NAME: (MACH_NUMBER_FIELD_NAME, MACH_NUMBER_FIELD_NAME, r"$M$", "thermo"),
+    TURBULENT_MACH_FIELD_NAME: (TURBULENT_MACH_FIELD_NAME, TURBULENT_MACH_FIELD_NAME, r"$M_t$", "thermo"),
+}
 
 VELOCITY_DATASET_NAMES = {"vx", "vy", "vz"}
 
@@ -27,7 +41,7 @@ BUILTIN_FIELD_MAP = {
     "r_criterion": ("r_criterion", "r_criterion", r"$R$", "rcriterion"),
 }
 
-DERIVED_FIELD_FAMILIES = {"vorticity", "divergence", "qcriterion", "rcriterion", "density_gradient"}
+DERIVED_FIELD_FAMILIES = {"vorticity", "divergence", "qcriterion", "rcriterion", "density_gradient", "thermo"}
 DERIVED_DATASET_NAMES = {
     "vorticity_magnitude",
     "omega_x",
@@ -37,6 +51,7 @@ DERIVED_DATASET_NAMES = {
     "q_criterion",
     "r_criterion",
     DENSITY_GRADIENT_FIELD_NAME,
+    *THERMO_DERIVED_FIELD_NAMES,
 }
 
 
@@ -57,6 +72,9 @@ def build_available_field_specs(fields_group):
 
     if DENSITY_DATASET_NAME in dataset_names:
         field_specs.setdefault(DENSITY_GRADIENT_FIELD_NAME, DENSITY_GRADIENT_FIELD_SPEC)
+    if DENSITY_DATASET_NAME in dataset_names and PRESSURE_DATASET_NAME in dataset_names:
+        for field_name, field_spec in THERMO_DERIVED_FIELD_SPECS.items():
+            field_specs.setdefault(field_name, field_spec)
 
     return field_specs
 
@@ -64,6 +82,9 @@ def build_available_field_specs(fields_group):
 def default_requested_field_names(field_lookup):
     """Return the default field selection for one available-field map."""
     requested_fields = ["velocity_magnitude", "vorticity_magnitude", "div_u", "q_criterion", "r_criterion"]
+    for field_name in THERMO_DERIVED_FIELD_NAMES:
+        if field_name in field_lookup:
+            requested_fields.append(field_name)
     if DENSITY_GRADIENT_FIELD_NAME in field_lookup:
         requested_fields.append(DENSITY_GRADIENT_FIELD_NAME)
     scalar_fields = [name for name, spec in field_lookup.items() if spec[3] == "scalar"]
@@ -78,6 +99,9 @@ def finalize_requested_field_names(field_lookup, requested_fields):
         if "q_criterion" in resolved_fields and "r_criterion" not in resolved_fields:
             q_index = resolved_fields.index("q_criterion")
             resolved_fields.insert(q_index + 1, "r_criterion")
+        for field_name in THERMO_DERIVED_FIELD_NAMES:
+            if field_name in field_lookup and field_name not in resolved_fields:
+                resolved_fields.append(field_name)
         if (
             DENSITY_GRADIENT_FIELD_NAME in field_lookup
             and DENSITY_GRADIENT_FIELD_NAME not in resolved_fields

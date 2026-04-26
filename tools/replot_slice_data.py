@@ -7,7 +7,7 @@ Example commands:
       1 -> vorticity_magnitude
       2 -> velocity_magnitude
       3 -> the saved scalar field when there is exactly one scalar field
-      div_u, q_criterion, r_criterion, and density_gradient_magnitude are available by explicit field name when present
+      div_u, sound_speed, mach_number, turbulent_mach_number, q_criterion, r_criterion, and density_gradient_magnitude are available by explicit field name when present
     --slice selects which saved plane to render using:
       1 -> xy_center
       2 -> xy_face
@@ -376,6 +376,8 @@ def _apply_normalization(saved, value_normalization_mode, normalize, print_stats
             print(f"Stored global 3D colorbar max: {stored_limits_saved[1]:.6g}")
         if "global_rms" in attrs:
             print(f"Stored global 3D RMS normalization: {float(attrs['global_rms']):.6g}")
+        if "global_mean" in attrs:
+            print(f"Stored global 3D average: {float(attrs['global_mean']):.6g}")
         print(f"Saved value normalization: {saved_value_normalization}")
         print(f"Display value normalization: {value_normalization}")
 
@@ -1518,6 +1520,8 @@ def print_saved_slice_metadata(slice_file, field_name, slice_tag):
         print(f"Stored global 3D colorbar max: {float(attrs['global_max']):.6g}")
     if "global_rms" in attrs:
         print(f"Stored global 3D RMS normalization: {float(attrs['global_rms']):.6g}")
+    if "global_mean" in attrs:
+        print(f"Stored global 3D average: {float(attrs['global_mean']):.6g}")
     print(f"Stored value normalization: {str(attrs.get('value_normalization', 'none'))}")
     print(f"Values shape: {saved['values'].shape}")
 
@@ -1641,7 +1645,7 @@ def main():
     parser.add_argument(
         "--field",
         default=None,
-        help="Field selector to replot: 1=vorticity_magnitude, 2=velocity_magnitude, 3=the saved scalar field when unique, or an explicit field name such as div_u, q_criterion, r_criterion, or density_gradient_magnitude.",
+        help="Field selector to replot: 1=vorticity_magnitude, 2=velocity_magnitude, 3=the saved scalar field when unique, or an explicit field name such as div_u, sound_speed, mach_number, turbulent_mach_number, q_criterion, r_criterion, or density_gradient_magnitude.",
     )
     parser.add_argument(
         "--slice",

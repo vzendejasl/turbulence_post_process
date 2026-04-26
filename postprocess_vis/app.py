@@ -19,6 +19,7 @@ from postprocess_fft.transform import backward_field
 from postprocess_fft.transform import forward_field
 from postprocess_fft.transform import get_backend
 from postprocess_fft.transform import local_wavenumber_mesh
+from postprocess_fft.common import global_mean_energy
 from postprocess_fft.common import global_range
 from postprocess_fft.common import heffte
 from postprocess_lib.prepare import ensure_structured_h5
@@ -26,6 +27,10 @@ from postprocess_vis.field_specs import BUILTIN_FIELD_MAP
 from postprocess_vis.field_specs import DENSITY_DATASET_NAME
 from postprocess_vis.field_specs import DERIVED_DATASET_NAMES
 from postprocess_vis.field_specs import DERIVED_FIELD_FAMILIES
+from postprocess_vis.field_specs import MACH_NUMBER_FIELD_NAME
+from postprocess_vis.field_specs import PRESSURE_DATASET_NAME
+from postprocess_vis.field_specs import SOUND_SPEED_FIELD_NAME
+from postprocess_vis.field_specs import TURBULENT_MACH_FIELD_NAME
 from postprocess_vis.field_specs import build_available_field_specs
 from postprocess_vis.field_specs import finalize_requested_field_names
 from postprocess_vis.normalization_labels import format_plot_label
@@ -323,8 +328,13 @@ def compute_local_derived_fields(
     include_divergence=False,
     include_qcriterion=False,
     include_rcriterion=False,
+    include_sound_speed=False,
+    include_mach_number=False,
+    include_turbulent_mach=False,
     include_density_gradient=False,
     density_dataset_name=None,
+    pressure_dataset_name=None,
+    thermo_gamma=1.4,
 ):
     """Compute distributed real-space derived velocity fields with HeFFTe."""
     shape = meta["shape"]
@@ -341,8 +351,20 @@ def compute_local_derived_fields(
         "local_box": local_box,
     }
 
+    global_points = int(np.prod(shape))
+    needs_velocity_fields = (
+        include_vorticity
+        or include_divergence
+        or include_qcriterion
+        or include_rcriterion
+        or include_mach_number
+        or include_turbulent_mach
+    )
+    needs_thermo_fields = include_sound_speed or include_mach_number or include_turbulent_mach
+
+    local_vx = local_vy = local_vz = None
     vx_k = vy_k = vz_k = None
-    if include_vorticity or include_divergence or include_qcriterion or include_rcriterion:
+    if needs_velocity_fields:
         local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
         vx_k = forward_field(plan, local_vx).reshape(local_shape, order="C")
         vy_k = forward_field(plan, local_vy).reshape(local_shape, order="C")
@@ -404,11 +426,43 @@ def compute_local_derived_fields(
         drho_dz = backward_field(plan, 1j * KZ * density_k, local_shape)
         derived_fields["density_gradient_magnitude"] = np.sqrt(drho_dx**2 + drho_dy**2 + drho_dz**2)
 
+    if needs_thermo_fields:
+        if not density_dataset_name or not pressure_dataset_name:
+            raise ValueError("Density and pressure dataset names are required to compute thermodynamic derived fields.")
+        local_density = read_structured_local_dataset(filepath, density_dataset_name, local_box, comm)
+        local_pressure = read_structured_local_dataset(filepath, pressure_dataset_name, local_box, comm)
+        invalid_density_count = comm.allreduce(int(np.count_nonzero(local_density <= 0.0)), op=MPI.SUM)
+        if invalid_density_count:
+            raise ValueError(
+                f"Cannot compute sound-speed and Mach fields: found {invalid_density_count} non-positive density value(s)."
+            )
+        local_sound_speed_sq = thermo_gamma * local_pressure / local_density
+        invalid_sound_speed_sq_count = comm.allreduce(int(np.count_nonzero(local_sound_speed_sq < 0.0)), op=MPI.SUM)
+        if invalid_sound_speed_sq_count:
+            raise ValueError(
+                f"Cannot compute sound-speed and Mach fields: found {invalid_sound_speed_sq_count} negative gamma*p/rho value(s)."
+            )
+        local_sound_speed = np.sqrt(np.maximum(local_sound_speed_sq, 0.0))
+        derived_fields[SOUND_SPEED_FIELD_NAME] = local_sound_speed
+
+        if include_mach_number or include_turbulent_mach:
+            if local_vx is None or local_vy is None or local_vz is None:
+                local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
+            local_speed = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
+            sound_speed_floor = np.maximum(local_sound_speed, 1.0e-30)
+            if include_mach_number:
+                derived_fields[MACH_NUMBER_FIELD_NAME] = local_speed / sound_speed_floor
+            if include_turbulent_mach:
+                turbulent_speed_scale = float(
+                    np.sqrt(2.0 * global_mean_energy(local_vx, local_vy, local_vz, global_points, comm))
+                )
+                derived_fields[TURBULENT_MACH_FIELD_NAME] = turbulent_speed_scale / sound_speed_floor
+
     return derived_fields
 
 
 def global_rms(values, comm):
-    """Return the global RMS of a distributed field, assuming zero mean."""
+    """Return the global RMS of a distributed field."""
     local_values = np.asarray(values, dtype=np.float64)
     local_sum_sq = float(np.sum(local_values**2, dtype=np.float64))
     local_count = int(local_values.size)
@@ -419,8 +473,20 @@ def global_rms(values, comm):
     return float(np.sqrt(global_sum_sq / float(global_count)))
 
 
+def global_mean(values, comm):
+    """Return the global arithmetic mean of a distributed field."""
+    local_values = np.asarray(values, dtype=np.float64)
+    local_sum = float(np.sum(local_values, dtype=np.float64))
+    local_count = int(local_values.size)
+    global_sum = comm.allreduce(local_sum, op=MPI.SUM)
+    global_count = comm.allreduce(local_count, op=MPI.SUM)
+    if global_count <= 0:
+        return 0.0
+    return float(global_sum / float(global_count))
+
+
 def compute_global_field_stats(filepath, dataset_name, field_family, meta, comm, derived_cache=None):
-    """Return the full 3D min/max and RMS for one field."""
+    """Return the full 3D min/max, RMS, and mean for one field."""
     shape = meta["shape"]
     proc_grid = choose_proc_grid(shape, comm.Get_size())
     boxes = build_boxes(shape, proc_grid)
@@ -441,6 +507,7 @@ def compute_global_field_stats(filepath, dataset_name, field_family, meta, comm,
         "global_min": float(global_min),
         "global_max": float(global_max),
         "global_rms": global_rms(local_values, comm),
+        "global_mean": global_mean(local_values, comm),
     }
 
 
@@ -486,9 +553,12 @@ def append_slice_metadata_log(
     time_value,
     plane_min,
     plane_max,
+    global_min,
+    global_max,
     colorbar_min,
     colorbar_max,
     global_rms,
+    global_mean,
     value_normalization,
     output_path,
 ):
@@ -497,16 +567,27 @@ def append_slice_metadata_log(
         "=" * 72,
         f"Source file: {os.path.abspath(source_file)}",
         f"Field: {field_label}",
+        "",
         f"Axis: {axis}",
         f"Plane index: {int(plane_index)}",
         f"Plane coordinate: {float(plane_coord):.16e}",
         f"Step: {step}",
         f"Time: {float(time_value):.16e}",
+        "",
+        "Slice statistics:",
         f"Slice 2D min: {float(plane_min):.16e}",
         f"Slice 2D max: {float(plane_max):.16e}",
-        f"Global 3D colorbar min: {float(colorbar_min):.16e}",
-        f"Global 3D colorbar max: {float(colorbar_max):.16e}",
+        "",
+        "Global 3D field statistics:",
+        f"Global 3D field min: {float(global_min):.16e}",
+        f"Global 3D field max: {float(global_max):.16e}",
         f"Global 3D RMS normalization: {float(global_rms):.16e}",
+        f"Global 3D average: {float(global_mean):.16e}",
+        "",
+        "Displayed colorbar limits:",
+        f"Displayed colorbar min: {float(colorbar_min):.16e}",
+        f"Displayed colorbar max: {float(colorbar_max):.16e}",
+        "",
         f"Value normalization: {value_normalization}",
         f"Output: {os.path.abspath(output_path)}",
         "",
@@ -748,6 +829,7 @@ def run_visualization(
     save_slice_data=True,
     slice_data_output=None,
     value_normalization="none",
+    thermo_gamma=1.4,
 ):
     """Render one or more slice images from a structured HDF5 velocity file."""
     if comm is None:
@@ -767,6 +849,9 @@ def run_visualization(
     needs_divergence = any(spec[3] == "divergence" for spec in field_specs)
     needs_qcriterion = any(spec[3] == "qcriterion" for spec in field_specs)
     needs_rcriterion = any(spec[3] == "rcriterion" for spec in field_specs)
+    needs_sound_speed = any(spec[0] == SOUND_SPEED_FIELD_NAME for spec in field_specs)
+    needs_mach_number = any(spec[0] == MACH_NUMBER_FIELD_NAME for spec in field_specs)
+    needs_turbulent_mach = any(spec[0] == TURBULENT_MACH_FIELD_NAME for spec in field_specs)
     needs_density_gradient = any(spec[3] == "density_gradient" for spec in field_specs)
     derived_cache = None
 
@@ -792,16 +877,32 @@ def run_visualization(
                 data_file,
                 prepared_path,
                 backend_name,
+                thermo_gamma=thermo_gamma,
             )
         comm.Barrier()
         log_rank0(rank, f"Initialized slice-data file in {time.perf_counter() - init_start:.2f}s")
 
-    if needs_vorticity or needs_divergence or needs_qcriterion or needs_rcriterion or needs_density_gradient:
+    if (
+        needs_vorticity
+        or needs_divergence
+        or needs_qcriterion
+        or needs_rcriterion
+        or needs_sound_speed
+        or needs_mach_number
+        or needs_turbulent_mach
+        or needs_density_gradient
+    ):
         derived_start = time.perf_counter()
         if needs_vorticity:
             log_rank0(rank, "Computing distributed vorticity field with HeFFTe inverse FFT...")
         if needs_divergence:
             log_rank0(rank, "Computing distributed velocity-divergence field with HeFFTe inverse FFT...")
+        if needs_sound_speed:
+            log_rank0(rank, f"Computing distributed sound-speed field with gamma={thermo_gamma:.6g}...")
+        if needs_mach_number:
+            log_rank0(rank, f"Computing distributed Mach-number field with gamma={thermo_gamma:.6g}...")
+        if needs_turbulent_mach:
+            log_rank0(rank, f"Computing distributed turbulent-Mach field with gamma={thermo_gamma:.6g}...")
         if needs_qcriterion:
             log_rank0(rank, "Computing distributed Q-criterion field with HeFFTe inverse FFT...")
         if needs_rcriterion:
@@ -817,14 +918,33 @@ def run_visualization(
             include_divergence=needs_divergence,
             include_qcriterion=needs_qcriterion,
             include_rcriterion=needs_rcriterion,
+            include_sound_speed=needs_sound_speed,
+            include_mach_number=needs_mach_number,
+            include_turbulent_mach=needs_turbulent_mach,
             include_density_gradient=needs_density_gradient,
-            density_dataset_name=(DENSITY_DATASET_NAME if needs_density_gradient else None),
+            density_dataset_name=(
+                DENSITY_DATASET_NAME
+                if (needs_density_gradient or needs_sound_speed or needs_mach_number or needs_turbulent_mach)
+                else None
+            ),
+            pressure_dataset_name=(
+                PRESSURE_DATASET_NAME
+                if (needs_sound_speed or needs_mach_number or needs_turbulent_mach)
+                else None
+            ),
+            thermo_gamma=thermo_gamma,
         )
         comm.Barrier()
         if needs_vorticity:
             log_rank0(rank, f"Completed distributed vorticity field in {time.perf_counter() - derived_start:.2f}s")
         if needs_divergence:
             log_rank0(rank, f"Completed distributed velocity-divergence field in {time.perf_counter() - derived_start:.2f}s")
+        if needs_sound_speed:
+            log_rank0(rank, f"Completed distributed sound-speed field in {time.perf_counter() - derived_start:.2f}s")
+        if needs_mach_number:
+            log_rank0(rank, f"Completed distributed Mach-number field in {time.perf_counter() - derived_start:.2f}s")
+        if needs_turbulent_mach:
+            log_rank0(rank, f"Completed distributed turbulent-Mach field in {time.perf_counter() - derived_start:.2f}s")
         if needs_qcriterion:
             log_rank0(rank, f"Completed distributed Q-criterion field in {time.perf_counter() - derived_start:.2f}s")
         if needs_rcriterion:
@@ -838,7 +958,6 @@ def run_visualization(
     # it can be restored easily if we ever want to revisit distributed slice writes.
     use_legacy_parallel_slice_data_write = False
     for dataset_name, field_label, latex_label, field_family in field_specs:
-        log_rank0(rank, f"Field: {field_label}")
         global_stats = compute_global_field_stats(
             prepared_path,
             dataset_name,
@@ -848,13 +967,13 @@ def run_visualization(
             derived_cache=derived_cache,
         )
         if rank == 0:
-            print(
-                f"  Global 3D stats for {field_label}: "
-                f"min={global_stats['global_min']:.6g}, "
-                f"max={global_stats['global_max']:.6g}, "
-                f"rms={global_stats['global_rms']:.6g}",
-                flush=True,
-            )
+            print()
+            print(f"Field: {field_label}", flush=True)
+            print("  Global 3D statistics:", flush=True)
+            print(f"    min={global_stats['global_min']:.6g}", flush=True)
+            print(f"    max={global_stats['global_max']:.6g}", flush=True)
+            print(f"    rms={global_stats['global_rms']:.6g}", flush=True)
+            print(f"    avg={global_stats['global_mean']:.6g}", flush=True)
         computed_rms = float(global_stats["global_rms"])
         field_value_normalization = str(value_normalization or "none").strip().lower()
         normalization_scale = 1.0
@@ -931,6 +1050,7 @@ def run_visualization(
                             float(global_stats["global_min"]),
                             float(global_stats["global_max"]),
                             computed_rms,
+                            float(global_stats["global_mean"]),
                             value_normalization="none",
                         )
                     comm.Barrier()
@@ -946,6 +1066,7 @@ def run_visualization(
                             float(global_stats["global_min"]),
                             float(global_stats["global_max"]),
                             computed_rms,
+                            float(global_stats["global_mean"]),
                             value_normalization="none",
                         )
                     comm.Barrier()
@@ -958,6 +1079,7 @@ def run_visualization(
             rendered_paths = []
             if rank == 0:
                 coord_value = meta[axis_name][plane_index]
+                print()
                 print(
                     f"  Slice normal={axis_name}, index={plane_index}, "
                     f"coord={coord_value:.6g}, step={meta['step']}, time={meta['time']:.6g}"
@@ -1001,9 +1123,12 @@ def run_visualization(
                         meta["time"],
                         rendered_info["plane_min"],
                         rendered_info["plane_max"],
+                        float(global_stats["global_min"]),
+                        float(global_stats["global_max"]),
                         rendered_info["colorbar_min"],
                         rendered_info["colorbar_max"],
                         computed_rms,
+                        float(global_stats["global_mean"]),
                         field_value_normalization,
                         saved_path,
                     )
@@ -1063,6 +1188,12 @@ def main():
         choices=["heffte_fftw", "heffte_stock"],
         help="HeFFTe backend used when deriving vorticity, Q/R, and density-gradient fields from FFTs.",
     )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=1.4,
+        help="Ideal-gas ratio of specific heats used for derived sound-speed and Mach fields. Default is 1.4.",
+    )
     args = parser.parse_args()
     run_visualization(
         args.data_file,
@@ -1080,4 +1211,5 @@ def main():
         save_slice_data=not args.no_slice_data,
         slice_data_output=args.slice_data_output,
         value_normalization=args.value_normalization,
+        thermo_gamma=args.gamma,
     )
