@@ -456,7 +456,13 @@ def compute_local_derived_fields(
                 turbulent_speed_scale = float(
                     np.sqrt(2.0 * global_mean_energy(local_vx, local_vy, local_vz, global_points, comm))
                 )
-                derived_fields[TURBULENT_MACH_FIELD_NAME] = turbulent_speed_scale / sound_speed_floor
+                sound_speed_mean = global_mean(local_sound_speed, comm)
+                turbulent_mach_value = turbulent_speed_scale / max(sound_speed_mean, 1.0e-30)
+                derived_fields[TURBULENT_MACH_FIELD_NAME] = np.full_like(
+                    local_sound_speed,
+                    turbulent_mach_value,
+                    dtype=np.float64,
+                )
 
     return derived_fields
 

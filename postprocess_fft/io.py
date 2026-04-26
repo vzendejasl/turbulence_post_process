@@ -332,11 +332,8 @@ def save_spectra(
             )
         if turbulent_mach_number_stats is not None:
             handle.write(
-                "# Turbulent Mach number stats: "
-                f"min={float(turbulent_mach_number_stats['global_min']):.16e}, "
-                f"max={float(turbulent_mach_number_stats['global_max']):.16e}, "
-                f"rms={float(turbulent_mach_number_stats['global_rms']):.16e}, "
-                f"avg={float(turbulent_mach_number_stats['global_mean']):.16e}\n"
+                "# Turbulent Mach number: "
+                f"Mt = sqrt(2<KE>) / c_mean = {float(turbulent_mach_number_stats['global_mean']):.16e}\n"
             )
         handle.write("# File convention: integer-shell spectra file\n")
         handle.write("# Spectra conventions:\n")
@@ -401,11 +398,8 @@ def save_spectra(
             )
         if turbulent_mach_number_stats is not None:
             handle.write(
-                "# Turbulent Mach number stats: "
-                f"min={float(turbulent_mach_number_stats['global_min']):.16e}, "
-                f"max={float(turbulent_mach_number_stats['global_max']):.16e}, "
-                f"rms={float(turbulent_mach_number_stats['global_rms']):.16e}, "
-                f"avg={float(turbulent_mach_number_stats['global_mean']):.16e}\n"
+                "# Turbulent Mach number: "
+                f"Mt = sqrt(2<KE>) / c_mean = {float(turbulent_mach_number_stats['global_mean']):.16e}\n"
             )
         handle.write("# File convention: physical-wavenumber spectral-density file\n")
         handle.write("# Spectra conventions:\n")

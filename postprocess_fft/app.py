@@ -193,13 +193,17 @@ def analyze_file_parallel(
         local_speed = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
         sound_speed_floor = np.maximum(local_sound_speed, 1.0e-30)
         turbulent_speed_scale = float(np.sqrt(2.0 * total_ke))
-
         sound_speed_stats = global_field_stats(local_sound_speed, comm)
+        sound_speed_mean = float(sound_speed_stats["global_mean"])
+        turbulent_mach_value = turbulent_speed_scale / max(sound_speed_mean, 1.0e-30)
+
         mach_number_stats = global_field_stats(local_speed / sound_speed_floor, comm)
-        turbulent_mach_number_stats = global_field_stats(
-            turbulent_speed_scale / sound_speed_floor,
-            comm,
-        )
+        turbulent_mach_number_stats = {
+            "global_min": float(turbulent_mach_value),
+            "global_max": float(turbulent_mach_value),
+            "global_rms": float(turbulent_mach_value),
+            "global_mean": float(turbulent_mach_value),
+        }
 
     KX, KY, KZ = local_wavenumber_mesh(shape, local_box, dx, dy, dz)
     K_squared = KX**2 + KY**2 + KZ**2
@@ -351,7 +355,11 @@ def analyze_file_parallel(
         print()
         _print_scalar_stats_block("Mach number", mach_number_stats)
         print()
-        _print_scalar_stats_block("Turbulent Mach number", turbulent_mach_number_stats)
+        print("  Turbulent Mach number:")
+        print(
+            "    Mt = sqrt(2<KE>) / c_mean = "
+            f"{float(turbulent_mach_number_stats['global_mean']):.8f}"
+        )
 
     if root:
         print()
