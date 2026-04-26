@@ -49,16 +49,13 @@ class TestSliceFieldSpecs(unittest.TestCase):
 
         requested_fields = default_requested_field_names(field_lookup)
         self.assertEqual(
-            requested_fields[:9],
+            requested_fields[:6],
             [
                 "velocity_magnitude",
                 "vorticity_magnitude",
                 "div_u",
                 "q_criterion",
                 "r_criterion",
-                "sound_speed",
-                "mach_number",
-                "turbulent_mach_number",
                 "density_gradient_magnitude",
             ],
         )
@@ -99,14 +96,7 @@ class TestSliceFieldSpecs(unittest.TestCase):
         requested_fields = finalize_requested_field_names(field_lookup, ["density", "velocity_magnitude"])
         self.assertEqual(
             requested_fields,
-            [
-                "density",
-                "velocity_magnitude",
-                "sound_speed",
-                "mach_number",
-                "turbulent_mach_number",
-                "density_gradient_magnitude",
-            ],
+            ["density", "velocity_magnitude", "density_gradient_magnitude"],
         )
 
     def test_explicit_q_field_still_inserts_r_and_density_gradient(self) -> None:
@@ -119,14 +109,7 @@ class TestSliceFieldSpecs(unittest.TestCase):
         requested_fields = finalize_requested_field_names(field_lookup, ["q_criterion"])
         self.assertEqual(
             requested_fields,
-            [
-                "q_criterion",
-                "r_criterion",
-                "sound_speed",
-                "mach_number",
-                "turbulent_mach_number",
-                "density_gradient_magnitude",
-            ],
+            ["q_criterion", "r_criterion", "density_gradient_magnitude"],
         )
 
 

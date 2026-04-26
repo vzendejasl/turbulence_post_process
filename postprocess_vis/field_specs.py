@@ -82,9 +82,6 @@ def build_available_field_specs(fields_group):
 def default_requested_field_names(field_lookup):
     """Return the default field selection for one available-field map."""
     requested_fields = ["velocity_magnitude", "vorticity_magnitude", "div_u", "q_criterion", "r_criterion"]
-    for field_name in THERMO_DERIVED_FIELD_NAMES:
-        if field_name in field_lookup:
-            requested_fields.append(field_name)
     if DENSITY_GRADIENT_FIELD_NAME in field_lookup:
         requested_fields.append(DENSITY_GRADIENT_FIELD_NAME)
     scalar_fields = [name for name, spec in field_lookup.items() if spec[3] == "scalar"]
@@ -99,9 +96,6 @@ def finalize_requested_field_names(field_lookup, requested_fields):
         if "q_criterion" in resolved_fields and "r_criterion" not in resolved_fields:
             q_index = resolved_fields.index("q_criterion")
             resolved_fields.insert(q_index + 1, "r_criterion")
-        for field_name in THERMO_DERIVED_FIELD_NAMES:
-            if field_name in field_lookup and field_name not in resolved_fields:
-                resolved_fields.append(field_name)
         if (
             DENSITY_GRADIENT_FIELD_NAME in field_lookup
             and DENSITY_GRADIENT_FIELD_NAME not in resolved_fields

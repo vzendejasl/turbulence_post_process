@@ -253,6 +253,7 @@ Examples:
                         compute_structure_functions=args.structure_functions,
                         structure_function_full_domain=args.structure_function_full_box,
                         qr_joint_pdf_bins=args.qr_bins,
+                        thermo_gamma=args.gamma,
                     )
                     if rank == 0:
                         fft_results.append(fft_result)

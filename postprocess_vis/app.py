@@ -511,6 +511,15 @@ def compute_global_field_stats(filepath, dataset_name, field_family, meta, comm,
     }
 
 
+def print_global_field_stats_block(title, stats):
+    """Print one formatted global-statistics block on rank 0."""
+    print(f"{title}:", flush=True)
+    print(f"  min={stats['global_min']:.6g}", flush=True)
+    print(f"  max={stats['global_max']:.6g}", flush=True)
+    print(f"  rms={stats['global_rms']:.6g}", flush=True)
+    print(f"  avg={stats['global_mean']:.6g}", flush=True)
+
+
 def output_stem(source_path, field_label):
     """Build a clean default filename stem with the plotted field name once in front."""
     base = os.path.splitext(os.path.basename(source_path))[0]
@@ -854,6 +863,7 @@ def run_visualization(
     needs_turbulent_mach = any(spec[0] == TURBULENT_MACH_FIELD_NAME for spec in field_specs)
     needs_density_gradient = any(spec[3] == "density_gradient" for spec in field_specs)
     derived_cache = None
+    stats_cache = {}
 
     if rank == 0:
         print()
@@ -958,22 +968,21 @@ def run_visualization(
     # it can be restored easily if we ever want to revisit distributed slice writes.
     use_legacy_parallel_slice_data_write = False
     for dataset_name, field_label, latex_label, field_family in field_specs:
-        global_stats = compute_global_field_stats(
-            prepared_path,
-            dataset_name,
-            field_family,
-            meta,
-            comm,
-            derived_cache=derived_cache,
-        )
-        if rank == 0:
+        global_stats = stats_cache.get(dataset_name)
+        if global_stats is None:
+            global_stats = compute_global_field_stats(
+                prepared_path,
+                dataset_name,
+                field_family,
+                meta,
+                comm,
+                derived_cache=derived_cache,
+            )
+            stats_cache[dataset_name] = global_stats
+        if rank == 0 and field_family != "thermo":
             print()
             print(f"Field: {field_label}", flush=True)
-            print("  Global 3D statistics:", flush=True)
-            print(f"    min={global_stats['global_min']:.6g}", flush=True)
-            print(f"    max={global_stats['global_max']:.6g}", flush=True)
-            print(f"    rms={global_stats['global_rms']:.6g}", flush=True)
-            print(f"    avg={global_stats['global_mean']:.6g}", flush=True)
+            print_global_field_stats_block("  Global 3D statistics", global_stats)
         computed_rms = float(global_stats["global_rms"])
         field_value_normalization = str(value_normalization or "none").strip().lower()
         normalization_scale = 1.0

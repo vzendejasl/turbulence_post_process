@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 from mpi4py import MPI
 
+from .common import global_field_stats
 from .common import global_mean_energy
 from .common import heffte
 from .common import zero_near_zero
@@ -16,6 +17,7 @@ from .io import detect_header_lines
 from .io import plot_spectra
 from .io import read_data_file_chunked
 from .io import read_data_file_header
+from .io import read_structured_local_dataset
 from .io import read_structured_local_fields
 from .io import plot_qr_joint_pdf
 from .io import save_component_spectra
@@ -46,6 +48,15 @@ from .transform import print_component_ranges
 from .transform import verify_decomposition
 
 
+def _print_scalar_stats_block(label, stats):
+    """Print a consistently formatted scalar-statistics block."""
+    print(f"  {label}:")
+    print(f"    min: {float(stats['global_min']):.8f}")
+    print(f"    max: {float(stats['global_max']):.8f}")
+    print(f"    rms: {float(stats['global_rms']):.8f}")
+    print(f"    avg: {float(stats['global_mean']):.8f}")
+
+
 def analyze_file_parallel(
     filename,
     comm,
@@ -56,6 +67,7 @@ def analyze_file_parallel(
     compute_structure_functions=False,
     structure_function_full_domain=True,
     qr_joint_pdf_bins=256,
+    thermo_gamma=1.4,
 ):
     rank = comm.Get_rank()
     root = rank == 0
@@ -75,6 +87,15 @@ def analyze_file_parallel(
             header_lines = detect_header_lines(filename)
 
         step_number, time_value = read_data_file_header(filename, header_lines)
+        has_thermo_inputs = False
+        if structured_h5:
+            with h5py.File(filename, "r") as hf:
+                fields_group = hf.get("fields")
+                has_thermo_inputs = (
+                    fields_group is not None
+                    and "density" in fields_group
+                    and "pressure" in fields_group
+                )
         if structured_h5:
             x_unique = meta["x_coords"]
             y_unique = meta["y_coords"]
@@ -98,11 +119,13 @@ def analyze_file_parallel(
         if filename.endswith(".h5"):
             header_lines = 0
         structured_h5 = None
+        has_thermo_inputs = None
 
     header_lines = comm.bcast(header_lines, root=0)
     step_number = comm.bcast(step_number, root=0)
     time_value = comm.bcast(time_value, root=0)
     structured_h5 = comm.bcast(structured_h5, root=0)
+    has_thermo_inputs = comm.bcast(has_thermo_inputs, root=0)
     shape = comm.bcast(shape, root=0)
     dx = comm.bcast(dx, root=0)
     dy = comm.bcast(dy, root=0)
@@ -140,6 +163,43 @@ def analyze_file_parallel(
         local_vz = local_vz_flat.reshape(local_shape, order="C")
 
     total_ke = global_mean_energy(local_vx, local_vy, local_vz, global_points, comm)
+    sound_speed_stats = None
+    mach_number_stats = None
+    turbulent_mach_number_stats = None
+    if has_thermo_inputs:
+        if thermo_gamma <= 0.0:
+            raise ValueError(f"Thermodynamic gamma must be positive. Received {thermo_gamma!r}.")
+
+        local_density = read_structured_local_dataset(filename, "density", local_box, comm)
+        local_pressure = read_structured_local_dataset(filename, "pressure", local_box, comm)
+        invalid_density_count = comm.allreduce(int(np.count_nonzero(local_density <= 0.0)), op=MPI.SUM)
+        if invalid_density_count:
+            raise ValueError(
+                f"Cannot compute thermodynamic diagnostics: found {invalid_density_count} "
+                "non-positive density value(s)."
+            )
+        local_sound_speed_sq = thermo_gamma * local_pressure / local_density
+        invalid_sound_speed_sq_count = comm.allreduce(
+            int(np.count_nonzero(local_sound_speed_sq < 0.0)),
+            op=MPI.SUM,
+        )
+        if invalid_sound_speed_sq_count:
+            raise ValueError(
+                f"Cannot compute thermodynamic diagnostics: found {invalid_sound_speed_sq_count} "
+                "negative gamma*p/rho value(s)."
+            )
+
+        local_sound_speed = np.sqrt(np.maximum(local_sound_speed_sq, 0.0))
+        local_speed = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
+        sound_speed_floor = np.maximum(local_sound_speed, 1.0e-30)
+        turbulent_speed_scale = float(np.sqrt(2.0 * total_ke))
+
+        sound_speed_stats = global_field_stats(local_sound_speed, comm)
+        mach_number_stats = global_field_stats(local_speed / sound_speed_floor, comm)
+        turbulent_mach_number_stats = global_field_stats(
+            turbulent_speed_scale / sound_speed_floor,
+            comm,
+        )
 
     KX, KY, KZ = local_wavenumber_mesh(shape, local_box, dx, dy, dz)
     K_squared = KX**2 + KY**2 + KZ**2
@@ -227,11 +287,14 @@ def analyze_file_parallel(
         print(f"  Compressive: {comp_ke:.8f} ({comp_pct:.1f}%)")
         print(f"  Rotational: {rot_ke:.8f} ({rot_pct:.1f}%)")
         print(f"  Sum: {comp_ke + rot_ke:.8f}")
+        print()
         print("Decomposition component ranges:")
 
     print_component_ranges("Compressive component", vx_c, vy_c, vz_c, comm, root)
     print_component_ranges("Rotational component", vx_r, vy_r, vz_r, comm, root)
 
+    if root:
+        print()
     verify_decomposition(plan, local_shape, KX, KY, KZ, vx_c_k, vy_c_k, vz_c_k, vx_r_k, vy_r_k, vz_r_k, comm, root)
 
     if root:
@@ -279,6 +342,17 @@ def analyze_file_parallel(
 
     compute_energy_dissipation_enstrophy(vx_k, vy_k, vz_k, shape, local_box, dx, dy, dz, comm, root)
 
+    if root and sound_speed_stats is not None:
+        print()
+        print("Thermodynamic diagnostics:")
+        print(f"  gamma: {float(thermo_gamma):.6g}")
+        print()
+        _print_scalar_stats_block("Sound speed", sound_speed_stats)
+        print()
+        _print_scalar_stats_block("Mach number", mach_number_stats)
+        print()
+        _print_scalar_stats_block("Turbulent Mach number", turbulent_mach_number_stats)
+
     if root:
         print()
         print("Computing distributed Q-R joint PDF...")
@@ -310,6 +384,7 @@ def analyze_file_parallel(
     strain_vorticity_rel_error = abs(2.0 * sijsij_mean - wiwi_mean) / max(abs(wiwi_mean), 1.0e-30)
 
     if root:
+        print()
         print("Strain-vorticity diagnostic:")
         print(f"  <SijSij>: {sijsij_mean:.8f}")
         print(f"  <wiwi>: {wiwi_mean:.8f}")
@@ -504,6 +579,10 @@ def analyze_file_parallel(
             wiwi_mean=wiwi_mean,
             strain_enstrophy_rel_error=strain_enstrophy_rel_error,
             strain_vorticity_rel_error=strain_vorticity_rel_error,
+            thermo_gamma=thermo_gamma if sound_speed_stats is not None else None,
+            sound_speed_stats=sound_speed_stats,
+            mach_number_stats=mach_number_stats,
+            turbulent_mach_number_stats=turbulent_mach_number_stats,
         )
         save_component_spectra(
             k_centers,
@@ -590,6 +669,10 @@ def analyze_file_parallel(
             "wiwi_mean": wiwi_mean,
             "strain_enstrophy_rel_error": strain_enstrophy_rel_error,
             "strain_vorticity_rel_error": strain_vorticity_rel_error,
+            "thermo_gamma": float(thermo_gamma) if sound_speed_stats is not None else None,
+            "sound_speed_stats": sound_speed_stats,
+            "mach_number_stats": mach_number_stats,
+            "turbulent_mach_number_stats": turbulent_mach_number_stats,
             "r_values": r_values,
             "S_L": structure_function_longitudinal,
             "structure_function_path": structure_function_path,
@@ -658,6 +741,12 @@ Examples:
         help="Sample axis-aligned structure functions over only the shortest periodic half-box (r = 0..L/2).",
     )
     parser.set_defaults(structure_function_full_box=True)
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=1.4,
+        help="Ideal-gas ratio of specific heats used for thermodynamic diagnostics when density and pressure exist.",
+    )
     parser.add_argument("--visualize", "-v", action="store_true", help="Reserved for future use.")
     parser.add_argument("--no-plot", action="store_true", help="Skip plotting spectra on rank 0.")
     args = parser.parse_args()
@@ -679,6 +768,7 @@ Examples:
             compute_structure_functions=args.structure_functions,
             structure_function_full_domain=args.structure_function_full_box,
             qr_joint_pdf_bins=args.qr_bins,
+            thermo_gamma=args.gamma,
         )
         if rank == 0:
             results.append(result)
