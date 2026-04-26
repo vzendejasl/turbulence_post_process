@@ -43,7 +43,7 @@ class TestSliceFieldSpecs(unittest.TestCase):
         self.assertEqual(field_lookup["div_u"][3], "divergence")
         self.assertIn("sound_speed", field_lookup)
         self.assertIn("mach_number", field_lookup)
-        self.assertIn("turbulent_mach_number", field_lookup)
+        self.assertNotIn("turbulent_mach_number", field_lookup)
         self.assertIn("density_gradient_magnitude", field_lookup)
         self.assertEqual(field_lookup["density_gradient_magnitude"][3], "density_gradient")
 

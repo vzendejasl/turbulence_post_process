@@ -30,7 +30,6 @@ from postprocess_vis.field_specs import DERIVED_FIELD_FAMILIES
 from postprocess_vis.field_specs import MACH_NUMBER_FIELD_NAME
 from postprocess_vis.field_specs import PRESSURE_DATASET_NAME
 from postprocess_vis.field_specs import SOUND_SPEED_FIELD_NAME
-from postprocess_vis.field_specs import TURBULENT_MACH_FIELD_NAME
 from postprocess_vis.field_specs import build_available_field_specs
 from postprocess_vis.field_specs import finalize_requested_field_names
 from postprocess_vis.normalization_labels import format_plot_label
@@ -330,7 +329,6 @@ def compute_local_derived_fields(
     include_rcriterion=False,
     include_sound_speed=False,
     include_mach_number=False,
-    include_turbulent_mach=False,
     include_density_gradient=False,
     density_dataset_name=None,
     pressure_dataset_name=None,
@@ -358,9 +356,8 @@ def compute_local_derived_fields(
         or include_qcriterion
         or include_rcriterion
         or include_mach_number
-        or include_turbulent_mach
     )
-    needs_thermo_fields = include_sound_speed or include_mach_number or include_turbulent_mach
+    needs_thermo_fields = include_sound_speed or include_mach_number
 
     local_vx = local_vy = local_vz = None
     vx_k = vy_k = vz_k = None
@@ -445,24 +442,13 @@ def compute_local_derived_fields(
         local_sound_speed = np.sqrt(np.maximum(local_sound_speed_sq, 0.0))
         derived_fields[SOUND_SPEED_FIELD_NAME] = local_sound_speed
 
-        if include_mach_number or include_turbulent_mach:
+        if include_mach_number:
             if local_vx is None or local_vy is None or local_vz is None:
                 local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
             local_speed = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
             sound_speed_floor = np.maximum(local_sound_speed, 1.0e-30)
             if include_mach_number:
                 derived_fields[MACH_NUMBER_FIELD_NAME] = local_speed / sound_speed_floor
-            if include_turbulent_mach:
-                turbulent_speed_scale = float(
-                    np.sqrt(2.0 * global_mean_energy(local_vx, local_vy, local_vz, global_points, comm))
-                )
-                sound_speed_mean = global_mean(local_sound_speed, comm)
-                turbulent_mach_value = turbulent_speed_scale / max(sound_speed_mean, 1.0e-30)
-                derived_fields[TURBULENT_MACH_FIELD_NAME] = np.full_like(
-                    local_sound_speed,
-                    turbulent_mach_value,
-                    dtype=np.float64,
-                )
 
     return derived_fields
 
@@ -866,7 +852,6 @@ def run_visualization(
     needs_rcriterion = any(spec[3] == "rcriterion" for spec in field_specs)
     needs_sound_speed = any(spec[0] == SOUND_SPEED_FIELD_NAME for spec in field_specs)
     needs_mach_number = any(spec[0] == MACH_NUMBER_FIELD_NAME for spec in field_specs)
-    needs_turbulent_mach = any(spec[0] == TURBULENT_MACH_FIELD_NAME for spec in field_specs)
     needs_density_gradient = any(spec[3] == "density_gradient" for spec in field_specs)
     derived_cache = None
     stats_cache = {}
@@ -905,7 +890,6 @@ def run_visualization(
         or needs_rcriterion
         or needs_sound_speed
         or needs_mach_number
-        or needs_turbulent_mach
         or needs_density_gradient
     ):
         derived_start = time.perf_counter()
@@ -917,8 +901,6 @@ def run_visualization(
             log_rank0(rank, f"Computing distributed sound-speed field with gamma={thermo_gamma:.6g}...")
         if needs_mach_number:
             log_rank0(rank, f"Computing distributed Mach-number field with gamma={thermo_gamma:.6g}...")
-        if needs_turbulent_mach:
-            log_rank0(rank, f"Computing distributed turbulent-Mach field with gamma={thermo_gamma:.6g}...")
         if needs_qcriterion:
             log_rank0(rank, "Computing distributed Q-criterion field with HeFFTe inverse FFT...")
         if needs_rcriterion:
@@ -936,16 +918,15 @@ def run_visualization(
             include_rcriterion=needs_rcriterion,
             include_sound_speed=needs_sound_speed,
             include_mach_number=needs_mach_number,
-            include_turbulent_mach=needs_turbulent_mach,
             include_density_gradient=needs_density_gradient,
             density_dataset_name=(
                 DENSITY_DATASET_NAME
-                if (needs_density_gradient or needs_sound_speed or needs_mach_number or needs_turbulent_mach)
+                if (needs_density_gradient or needs_sound_speed or needs_mach_number)
                 else None
             ),
             pressure_dataset_name=(
                 PRESSURE_DATASET_NAME
-                if (needs_sound_speed or needs_mach_number or needs_turbulent_mach)
+                if (needs_sound_speed or needs_mach_number)
                 else None
             ),
             thermo_gamma=thermo_gamma,
@@ -959,8 +940,6 @@ def run_visualization(
             log_rank0(rank, f"Completed distributed sound-speed field in {time.perf_counter() - derived_start:.2f}s")
         if needs_mach_number:
             log_rank0(rank, f"Completed distributed Mach-number field in {time.perf_counter() - derived_start:.2f}s")
-        if needs_turbulent_mach:
-            log_rank0(rank, f"Completed distributed turbulent-Mach field in {time.perf_counter() - derived_start:.2f}s")
         if needs_qcriterion:
             log_rank0(rank, f"Completed distributed Q-criterion field in {time.perf_counter() - derived_start:.2f}s")
         if needs_rcriterion:
