@@ -150,6 +150,12 @@ Examples:
             "after FFT/slice processing finishes."
         ),
     )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=1.4,
+        help="Ideal-gas ratio of specific heats used for derived sound-speed and Mach fields during slice post-processing.",
+    )
     args = parser.parse_args()
 
     comm = MPI.COMM_WORLD
@@ -247,6 +253,7 @@ Examples:
                         compute_structure_functions=args.structure_functions,
                         structure_function_full_domain=args.structure_function_full_box,
                         qr_joint_pdf_bins=args.qr_bins,
+                        thermo_gamma=args.gamma,
                     )
                     if rank == 0:
                         fft_results.append(fft_result)
@@ -273,6 +280,7 @@ Examples:
                         figure_size=args.slice_figsize,
                         save_slice_data=not args.no_slice_data,
                         value_normalization=args.slice_value_normalization,
+                        thermo_gamma=args.gamma,
                         slice_data_output=(
                             args.slice_data_output
                             if idx == 0 and write_idx == 0

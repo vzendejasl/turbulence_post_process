@@ -157,6 +157,13 @@ def read_structured_local_fields(filename, local_box, comm):
     return vx, vy, vz
 
 
+def read_structured_local_dataset(filename, dataset_name, local_box, comm):
+    """Read one rank-local scalar dataset block from the structured HDF5 file."""
+    sx, sy, sz = box_slices(local_box)
+    with open_h5_for_parallel_read(filename, comm) as hf:
+        return np.asarray(hf["fields"][dataset_name][sx, sy, sz], dtype=np.float64)
+
+
 def read_structured_global_fields(filename):
     """Read full structured HDF5 velocity fields on one rank."""
     with h5py.File(filename, "r") as hf:
@@ -203,6 +210,14 @@ def save_spectra(
     comp_ke,
     rot_ke,
     total_enstrophy,
+    sijsij_mean=None,
+    wiwi_mean=None,
+    strain_enstrophy_rel_error=None,
+    strain_vorticity_rel_error=None,
+    thermo_gamma=None,
+    sound_speed_stats=None,
+    mach_number_stats=None,
+    turbulent_mach_number_stats=None,
 ):
     """Save integer-shell and physical-density spectra text files plus metadata."""
     stem = _spectra_output_stem(filename)
@@ -283,6 +298,43 @@ def save_spectra(
             f"Rotational KE: {float(rot_ke):.16e}\n"
         )
         handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
+        if sijsij_mean is not None:
+            handle.write(f"# Mean <SijSij>: {float(sijsij_mean):.16e}\n")
+        if wiwi_mean is not None:
+            handle.write(f"# Mean <wiwi>: {float(wiwi_mean):.16e}\n")
+        if strain_enstrophy_rel_error is not None:
+            handle.write(
+                "# Relative error in <SijSij> vs enstrophy: "
+                f"{float(strain_enstrophy_rel_error):.16e}\n"
+            )
+        if strain_vorticity_rel_error is not None:
+            handle.write(
+                "# Relative error in 2<SijSij> vs <wiwi>: "
+                f"{float(strain_vorticity_rel_error):.16e}\n"
+            )
+        if thermo_gamma is not None:
+            handle.write(f"# Thermodynamic gamma: {float(thermo_gamma):.16e}\n")
+        if sound_speed_stats is not None:
+            handle.write(
+                "# Sound speed stats: "
+                f"min={float(sound_speed_stats['global_min']):.16e}, "
+                f"max={float(sound_speed_stats['global_max']):.16e}, "
+                f"rms={float(sound_speed_stats['global_rms']):.16e}, "
+                f"avg={float(sound_speed_stats['global_mean']):.16e}\n"
+            )
+        if mach_number_stats is not None:
+            handle.write(
+                "# Mach number stats: "
+                f"min={float(mach_number_stats['global_min']):.16e}, "
+                f"max={float(mach_number_stats['global_max']):.16e}, "
+                f"rms={float(mach_number_stats['global_rms']):.16e}, "
+                f"avg={float(mach_number_stats['global_mean']):.16e}\n"
+            )
+        if turbulent_mach_number_stats is not None:
+            handle.write(
+                "# Turbulent Mach number: "
+                f"Mt = sqrt(2<KE>) / c_mean = {float(turbulent_mach_number_stats['global_mean']):.16e}\n"
+            )
         handle.write("# File convention: integer-shell spectra file\n")
         handle.write("# Spectra conventions:\n")
         handle.write("#   k: integer shell-center index used for shell binning\n")
@@ -312,6 +364,43 @@ def save_spectra(
             f"Rotational KE: {float(rot_ke):.16e}\n"
         )
         handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
+        if sijsij_mean is not None:
+            handle.write(f"# Mean <SijSij>: {float(sijsij_mean):.16e}\n")
+        if wiwi_mean is not None:
+            handle.write(f"# Mean <wiwi>: {float(wiwi_mean):.16e}\n")
+        if strain_enstrophy_rel_error is not None:
+            handle.write(
+                "# Relative error in <SijSij> vs enstrophy: "
+                f"{float(strain_enstrophy_rel_error):.16e}\n"
+            )
+        if strain_vorticity_rel_error is not None:
+            handle.write(
+                "# Relative error in 2<SijSij> vs <wiwi>: "
+                f"{float(strain_vorticity_rel_error):.16e}\n"
+            )
+        if thermo_gamma is not None:
+            handle.write(f"# Thermodynamic gamma: {float(thermo_gamma):.16e}\n")
+        if sound_speed_stats is not None:
+            handle.write(
+                "# Sound speed stats: "
+                f"min={float(sound_speed_stats['global_min']):.16e}, "
+                f"max={float(sound_speed_stats['global_max']):.16e}, "
+                f"rms={float(sound_speed_stats['global_rms']):.16e}, "
+                f"avg={float(sound_speed_stats['global_mean']):.16e}\n"
+            )
+        if mach_number_stats is not None:
+            handle.write(
+                "# Mach number stats: "
+                f"min={float(mach_number_stats['global_min']):.16e}, "
+                f"max={float(mach_number_stats['global_max']):.16e}, "
+                f"rms={float(mach_number_stats['global_rms']):.16e}, "
+                f"avg={float(mach_number_stats['global_mean']):.16e}\n"
+            )
+        if turbulent_mach_number_stats is not None:
+            handle.write(
+                "# Turbulent Mach number: "
+                f"Mt = sqrt(2<KE>) / c_mean = {float(turbulent_mach_number_stats['global_mean']):.16e}\n"
+            )
         handle.write("# File convention: physical-wavenumber spectral-density file\n")
         handle.write("# Spectra conventions:\n")
         handle.write("#   k_phy: physical shell-center wavenumber, k_phy = (2*pi/L) * k\n")
