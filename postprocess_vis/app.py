@@ -60,6 +60,8 @@ PLANE_AXES = {
     "z": ("y", "x"),
 }
 
+NEAR_ZERO_DILATATION_RMS_TOL = 1.0e-12
+
 
 def log_rank0(rank, message):
     """Print one progress message from rank 0 and flush immediately."""
@@ -598,11 +600,29 @@ def compute_and_store_full_field_pdfs(
                 f"Unsupported PDF normalization '{normalization}' for '{pdf_spec['pdf_name']}'."
             )
 
+        pdf_local_values = derived_cache[source_field]
+        pdf_value_range = None
+        near_zero_treated_as_zero = False
+        if (
+            source_field == "div_u"
+            and normalization == "global_rms"
+            and normalization_scale <= NEAR_ZERO_DILATATION_RMS_TOL
+        ):
+            near_zero_treated_as_zero = True
+            pdf_local_values = np.zeros_like(derived_cache[source_field], dtype=np.float64)
+            pdf_value_range = (-0.5, 0.5)
+            log_rank0(
+                rank,
+                f"  Divergence RMS for {pdf_spec['pdf_name']} is {normalization_scale:.6g}, "
+                "so the field is being treated as numerically zero for rank-stable PDF storage.",
+            )
+
         pdf_result = compute_distributed_field_pdf(
-            derived_cache[source_field],
+            pdf_local_values,
             comm,
             bins=pdf_bins,
-            normalization_scale=normalization_scale,
+            value_range=pdf_value_range,
+            normalization_scale=(1.0 if near_zero_treated_as_zero else normalization_scale),
             pdf_name=pdf_spec["pdf_name"],
             source_field=source_field,
             normalization=normalization,
@@ -610,6 +630,15 @@ def compute_and_store_full_field_pdfs(
             x_label=pdf_spec.get("x_label", latex_label),
             y_label=pdf_spec.get("y_label", "PDF"),
         )
+        if near_zero_treated_as_zero:
+            pdf_result["measured_normalization_scale"] = float(normalization_scale)
+            pdf_result["normalization_scale"] = 0.0
+            pdf_result["near_zero_rms_tolerance"] = float(NEAR_ZERO_DILATATION_RMS_TOL)
+            pdf_result["near_zero_field_treated_as_zero"] = True
+            pdf_result["binning_warning"] = (
+                f"div_u RMS is <= {NEAR_ZERO_DILATATION_RMS_TOL:.1e}, so the normalized dilatation PDF was stored "
+                "as a zero-field delta approximation for rank stability."
+            )
         pdf_result["source_file"] = os.path.abspath(prepared_path)
         pdf_result["source_h5"] = os.path.abspath(prepared_path)
         pdf_result["step"] = str(meta["step"])

@@ -9,11 +9,33 @@ try:
 except ImportError:  # pragma: no cover - environment dependent
     MPI = None
 
+from postprocess_vis.pdfs import _rescale_pdf_result_for_plot
 from postprocess_vis.pdfs import compute_distributed_field_pdf
 
 
 @unittest.skipIf(MPI is None, "mpi4py is not installed in this test environment")
 class TestFieldPdf(unittest.TestCase):
+    def test_raw_replot_rescales_axis_and_density(self) -> None:
+        pdf_result = {
+            "pdf_name": "normalized_dilatation",
+            "source_field": "div_u",
+            "normalization": "global_rms",
+            "bin_edges": np.array([-2.0, 0.0, 2.0], dtype=np.float64),
+            "bin_centers": np.array([-1.0, 1.0], dtype=np.float64),
+            "counts": np.array([1, 1], dtype=np.int64),
+            "pdf": np.array([0.25, 0.25], dtype=np.float64),
+            "x_label": "normalized div_u",
+            "plot_title": "Normalized Dilatation PDF",
+            "measured_normalization_scale": 4.0,
+        }
+
+        raw = _rescale_pdf_result_for_plot(pdf_result, x_normalization="raw")
+
+        np.testing.assert_allclose(raw["bin_edges"], np.array([-8.0, 0.0, 8.0], dtype=np.float64))
+        np.testing.assert_allclose(raw["bin_centers"], np.array([-4.0, 4.0], dtype=np.float64))
+        np.testing.assert_allclose(raw["pdf"], np.array([0.0625, 0.0625], dtype=np.float64))
+        self.assertEqual(raw["x_label"], "div_u")
+
     def test_pdf_integrates_to_one(self) -> None:
         values = np.array([-2.0, -1.0, 0.0, 1.0, 2.0], dtype=np.float64)
         result = compute_distributed_field_pdf(

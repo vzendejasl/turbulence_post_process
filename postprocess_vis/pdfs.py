@@ -193,6 +193,14 @@ def field_pdf_metadata_text(pdf_result):
         f"PDF integral: {float(pdf_result['pdf_integral']):.16e}",
         f"Binning warning: {pdf_result['binning_warning']}",
     ]
+    if "measured_normalization_scale" in pdf_result:
+        lines.append(
+            f"Measured normalization scale: {float(pdf_result['measured_normalization_scale']):.16e}"
+        )
+    if "near_zero_field_treated_as_zero" in pdf_result:
+        lines.append(
+            f"Near-zero field treated as zero: {bool(pdf_result['near_zero_field_treated_as_zero'])}"
+        )
     if str(pdf_result.get("range_warning", "")).strip():
         lines.append(f"Range warning: {pdf_result['range_warning']}")
     return "\n".join(lines) + "\n"
@@ -206,18 +214,57 @@ def write_field_pdf_metadata(output_path, pdf_result):
     return metadata_path
 
 
-def plot_field_pdf(pdf_result, output_path, *, plot=False):
+def _rescale_pdf_result_for_plot(pdf_result, x_normalization="stored"):
+    """Return a plotting copy of one stored PDF result with optional x-axis rescaling."""
+    resolved = str(x_normalization or "stored").strip().lower()
+    if resolved not in {"stored", "raw"}:
+        raise ValueError(f"Unsupported x_normalization '{x_normalization}'. Use one of: stored, raw.")
+
+    result = dict(pdf_result)
+    result["bin_edges"] = np.asarray(pdf_result["bin_edges"], dtype=np.float64).copy()
+    result["bin_centers"] = np.asarray(pdf_result["bin_centers"], dtype=np.float64).copy()
+    result["counts"] = np.asarray(pdf_result["counts"])
+    result["pdf"] = np.asarray(pdf_result["pdf"], dtype=np.float64).copy()
+
+    if resolved == "stored":
+        return result
+
+    scale = float(pdf_result.get("measured_normalization_scale", pdf_result.get("normalization_scale", 0.0)))
+    if not np.isfinite(scale) or abs(scale) <= 1.0e-30:
+        raise ValueError(
+            "Cannot replot this stored PDF in raw units because the normalization scale is not usable."
+        )
+
+    result["bin_edges"] = result["bin_edges"] * scale
+    result["bin_centers"] = result["bin_centers"] * scale
+    result["pdf"] = result["pdf"] / abs(scale)
+    result["value_range_min"] = float(result["bin_edges"][0])
+    result["value_range_max"] = float(result["bin_edges"][-1])
+    source_field = str(pdf_result.get("source_field", "field"))
+    result["x_label"] = source_field
+    result["plot_title"] = f"{pdf_result.get('plot_title', 'Field PDF')} [raw units]"
+    result["x_normalization"] = "raw"
+    return result
+
+
+def plot_field_pdf(pdf_result, output_path, *, plot=False, y_scale="linear", x_normalization="stored"):
     """Plot one stored field PDF to disk."""
     import matplotlib.pyplot as plt
 
-    centers = np.asarray(pdf_result["bin_centers"], dtype=np.float64)
-    pdf = np.asarray(pdf_result["pdf"], dtype=np.float64)
+    plotted = _rescale_pdf_result_for_plot(pdf_result, x_normalization=x_normalization)
+    centers = np.asarray(plotted["bin_centers"], dtype=np.float64)
+    pdf = np.asarray(plotted["pdf"], dtype=np.float64)
+    resolved_y_scale = str(y_scale or "linear").strip().lower()
+    if resolved_y_scale not in {"linear", "log"}:
+        raise ValueError(f"Unsupported y_scale '{y_scale}'. Use one of: linear, log.")
 
     fig, ax = plt.subplots(figsize=(7.0, 5.0))
     ax.plot(centers, pdf, color="black", linewidth=1.5)
-    ax.set_xlabel(str(pdf_result.get("x_label", "Value")))
-    ax.set_ylabel(str(pdf_result.get("y_label", "PDF")))
-    ax.set_title(str(pdf_result.get("plot_title", "Field PDF")))
+    ax.set_xlabel(str(plotted.get("x_label", "Value")))
+    ax.set_ylabel(str(plotted.get("y_label", "PDF")))
+    ax.set_title(str(plotted.get("plot_title", "Field PDF")))
+    if resolved_y_scale == "log":
+        ax.set_yscale("log")
     ax.grid(True, alpha=0.25)
     fig.tight_layout()
     fig.savefig(output_path)

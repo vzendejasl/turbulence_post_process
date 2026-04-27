@@ -56,6 +56,18 @@ def main():
     parser.add_argument("--plot", action="store_true", help="Also display the plot after saving")
     parser.add_argument("--metadata", action="store_true", help="Print the stored metadata for the selected PDF.")
     parser.add_argument("--export-csv", default=None, help="Optional CSV export path for the selected PDF data.")
+    parser.add_argument(
+        "--y-scale",
+        default="linear",
+        choices=["linear", "log"],
+        help="Vertical scale for the plotted PDF. Use 'log' for a logarithmic PDF view.",
+    )
+    parser.add_argument(
+        "--x-normalization",
+        default="stored",
+        choices=["stored", "raw"],
+        help="How to plot the x-axis. 'stored' uses the saved PDF variable, 'raw' rescales back to the original field units when the stored normalization scale is available.",
+    )
     args = parser.parse_args()
 
     if args.list or args.pdf is None:
@@ -79,7 +91,13 @@ def main():
 
     output_anchor = str(pdf_result.get("source_h5", args.slice_file))
     output_path = args.output or field_pdf_output_path(output_anchor, args.pdf, output_format=args.format)
-    plot_field_pdf(pdf_result, output_path, plot=args.plot)
+    plot_field_pdf(
+        pdf_result,
+        output_path,
+        plot=args.plot,
+        y_scale=args.y_scale,
+        x_normalization=args.x_normalization,
+    )
     print(f"Saved field PDF plot: {output_path}")
 
 
