@@ -599,6 +599,16 @@ The slice workflow now also writes one combined HDF5 file:
 
   data/slice_data/SampledData0_slices.h5
 
+That same file can now also store full-field PDFs under a top-level `pdfs/`
+group.  The first built-in PDF is the normalized dilatation PDF:
+
+  chi = div_u / rms(div_u)
+
+The PDF currently uses a variable bin range taken from the global min/max of
+the normalized field.  This is convenient for first-pass analysis, but it means
+PDFs from different runs should be replotted onto a common range before making
+direct comparisons.
+
 Use the standalone reader/replot tool to inspect what is available:
 
   python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --list
@@ -616,6 +626,19 @@ Replot with RMS normalization applied from the saved metadata:
     --field velocity_magnitude \
     --slice xy_center \
     --value-normalization global_rms
+
+Compute and store only the full-field PDFs during the slice stage:
+
+  mpirun -n 4 python main.py your_velocity_data.h5 \
+    --slice-pdf-only \
+    --slice-pdf-bins 256
+
+Inspect and replot stored full-field PDFs:
+
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --list
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_dilatation \
+    --metadata
 
 Example scalar workflow:
 

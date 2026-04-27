@@ -33,8 +33,16 @@ from postprocess_vis.field_specs import SOUND_SPEED_FIELD_NAME
 from postprocess_vis.field_specs import build_available_field_specs
 from postprocess_vis.field_specs import finalize_requested_field_names
 from postprocess_vis.normalization_labels import format_plot_label
+from postprocess_vis.pdfs import DEFAULT_FIELD_PDF_BINS
+from postprocess_vis.pdfs import compute_distributed_field_pdf
+from postprocess_vis.pdfs import default_field_pdf_specs
+from postprocess_vis.pdfs import field_pdf_output_path
+from postprocess_vis.pdfs import plot_field_pdf
+from postprocess_vis.pdfs import print_field_pdf_summary
+from postprocess_vis.pdfs import write_field_pdf_metadata
 from postprocess_vis.slice_data import default_slice_data_output
 from postprocess_vis.slice_data import initialize_slice_data_file
+from postprocess_vis.slice_data import save_pdf_serial
 from postprocess_vis.slice_data import storage_slice_tag
 from postprocess_vis.slice_data import write_slice_stats_serial
 from postprocess_vis.slice_data import write_slice_plane_parallel
@@ -537,6 +545,90 @@ def output_name(data_file, field_label, axis, slice_tag, output_format):
     return os.path.join(output_dir, f"{base}_{PLANE_NAMES[axis]}_{slice_tag}.{output_format}")
 
 
+def compute_and_store_full_field_pdfs(
+    prepared_path,
+    pdf_specs,
+    stats_cache,
+    derived_cache,
+    meta,
+    comm,
+    *,
+    save_slice_data,
+    slice_data_path,
+    output_format,
+    plot,
+    pdf_bins,
+):
+    """Compute configured full-field PDFs, store them in HDF5, and plot them on rank 0."""
+    rank = comm.Get_rank()
+    outputs = []
+    if not pdf_specs:
+        return outputs
+
+    if not save_slice_data:
+        log_rank0(rank, "Skipping full-field PDF generation because slice-data output is disabled.")
+        return outputs
+
+    for pdf_spec in pdf_specs:
+        source_field = str(pdf_spec["source_field"])
+        if derived_cache is None or source_field not in derived_cache:
+            raise ValueError(
+                f"Cannot compute PDF '{pdf_spec['pdf_name']}' because derived field '{source_field}' is unavailable."
+            )
+
+        dataset_name, field_label, latex_label, field_family = canonical_field_name(source_field)
+        global_stats = stats_cache.get(dataset_name)
+        if global_stats is None:
+            global_stats = compute_global_field_stats(
+                prepared_path,
+                dataset_name,
+                field_family,
+                meta,
+                comm,
+                derived_cache=derived_cache,
+            )
+            stats_cache[dataset_name] = global_stats
+
+        normalization = str(pdf_spec.get("normalization", "none")).strip().lower()
+        normalization_scale = 1.0
+        if normalization == "global_rms":
+            normalization_scale = float(global_stats["global_rms"])
+        elif normalization != "none":
+            raise ValueError(
+                f"Unsupported PDF normalization '{normalization}' for '{pdf_spec['pdf_name']}'."
+            )
+
+        pdf_result = compute_distributed_field_pdf(
+            derived_cache[source_field],
+            comm,
+            bins=pdf_bins,
+            normalization_scale=normalization_scale,
+            pdf_name=pdf_spec["pdf_name"],
+            source_field=source_field,
+            normalization=normalization,
+            plot_title=pdf_spec.get("plot_title", field_label),
+            x_label=pdf_spec.get("x_label", latex_label),
+            y_label=pdf_spec.get("y_label", "PDF"),
+        )
+        pdf_result["source_file"] = os.path.abspath(prepared_path)
+        pdf_result["source_h5"] = os.path.abspath(prepared_path)
+        pdf_result["step"] = str(meta["step"])
+        pdf_result["time"] = float(meta["time"])
+        pdf_result["grid_shape"] = np.asarray(meta["shape"], dtype=np.int64)
+
+        if rank == 0:
+            save_pdf_serial(slice_data_path, pdf_spec["pdf_name"], pdf_result)
+            output_path = field_pdf_output_path(prepared_path, pdf_spec["pdf_name"], output_format=output_format)
+            plot_field_pdf(pdf_result, output_path, plot=plot)
+            write_field_pdf_metadata(output_path, pdf_result)
+            print_field_pdf_summary(pdf_result, output_path=output_path)
+            outputs.append(output_path)
+        comm.Barrier()
+
+    outputs = comm.bcast(outputs if rank == 0 else None, root=0)
+    return outputs
+
+
 def slice_metadata_log_path(output_path):
     """Return the append-only metadata log path for one slice_plots directory."""
     directory = os.path.dirname(os.path.abspath(output_path))
@@ -831,6 +923,8 @@ def run_visualization(
     slice_data_output=None,
     value_normalization="none",
     thermo_gamma=1.4,
+    pdf_only=False,
+    pdf_bins=DEFAULT_FIELD_PDF_BINS,
 ):
     """Render one or more slice images from a structured HDF5 velocity file."""
     if comm is None:
@@ -838,13 +932,19 @@ def run_visualization(
     rank = comm.Get_rank()
 
     prepared_path = data_file if assume_structured_h5 else ensure_structured_h5(data_file)
-    field_specs = resolve_requested_fields(prepared_path, field_names)
+    requested_field_specs = resolve_requested_fields(prepared_path, field_names)
+    pdf_specs = default_field_pdf_specs(requested_field_specs, force_normalized_dilatation=pdf_only)
+    field_specs = [] if pdf_only else requested_field_specs
     meta = read_grid_metadata(prepared_path)
-    requests = build_slice_requests(meta, slice_specs, axis)
+    requests = [] if pdf_only else build_slice_requests(meta, slice_specs, axis)
     saved_slice_data_path = slice_data_output or default_slice_data_output(prepared_path)
 
+    if pdf_only and output:
+        raise ValueError("--output is not supported with --pdf-only because no slice image is rendered.")
     if output and (len(requests) != 1 or len(field_specs) != 1):
         raise ValueError("--output can only be used when rendering a single slice.")
+    if pdf_only and not save_slice_data:
+        raise ValueError("--pdf-only requires slice-data output because full-field PDFs are stored in the *_slices.h5 file.")
 
     needs_vorticity = any(spec[3] == "vorticity" for spec in field_specs)
     needs_divergence = any(spec[3] == "divergence" for spec in field_specs)
@@ -853,6 +953,8 @@ def run_visualization(
     needs_sound_speed = any(spec[0] == SOUND_SPEED_FIELD_NAME for spec in field_specs)
     needs_mach_number = any(spec[0] == MACH_NUMBER_FIELD_NAME for spec in field_specs)
     needs_density_gradient = any(spec[3] == "density_gradient" for spec in field_specs)
+    pdf_source_fields = {spec["source_field"] for spec in pdf_specs}
+    needs_divergence = needs_divergence or ("div_u" in pdf_source_fields)
     derived_cache = None
     stats_cache = {}
 
@@ -863,7 +965,10 @@ def run_visualization(
         print("-" * 60, flush=True)
         print(f"Loading {prepared_path} with {comm.Get_size()} MPI ranks...", flush=True)
         print(f"Structured domain dimensions: {meta['shape']}", flush=True)
-        print(f"Rendering {len(requests)} slice(s) for {len(field_specs)} field set(s)...", flush=True)
+        if pdf_only:
+            print("PDF-only mode enabled: slice images will be skipped.", flush=True)
+        else:
+            print(f"Rendering {len(requests)} slice(s) for {len(field_specs)} field set(s)...", flush=True)
         if save_slice_data:
             print(f"Saving reusable slice data to: {saved_slice_data_path}", flush=True)
 
@@ -947,7 +1052,22 @@ def run_visualization(
         if needs_density_gradient:
             log_rank0(rank, f"Completed distributed density-gradient field in {time.perf_counter() - derived_start:.2f}s")
 
-    outputs = []
+    outputs = compute_and_store_full_field_pdfs(
+        prepared_path,
+        pdf_specs,
+        stats_cache,
+        derived_cache,
+        meta,
+        comm,
+        save_slice_data=save_slice_data,
+        slice_data_path=saved_slice_data_path,
+        output_format=output_format,
+        plot=plot,
+        pdf_bins=pdf_bins,
+    )
+    if pdf_only:
+        return outputs, (saved_slice_data_path if save_slice_data else None)
+
     # DANE can hang in the legacy MPI slice-data write path for x-normal slices,
     # where only one rank owns the requested plane. Keep the old branch below so
     # it can be restored easily if we ever want to revisit distributed slice writes.
@@ -1177,6 +1297,17 @@ def main():
         help="Optional plot-time normalization for rendered slice values. Saved slice-data HDF5 values remain raw.",
     )
     parser.add_argument(
+        "--pdf-only",
+        action="store_true",
+        help="Skip slice-image rendering and only compute/store the configured full-field PDFs.",
+    )
+    parser.add_argument(
+        "--pdf-bins",
+        type=int,
+        default=DEFAULT_FIELD_PDF_BINS,
+        help=f"Number of bins for stored full-field PDFs. Default is {DEFAULT_FIELD_PDF_BINS}.",
+    )
+    parser.add_argument(
         "--backend",
         default="heffte_fftw",
         choices=["heffte_fftw", "heffte_stock"],
@@ -1206,4 +1337,6 @@ def main():
         slice_data_output=args.slice_data_output,
         value_normalization=args.value_normalization,
         thermo_gamma=args.gamma,
+        pdf_only=args.pdf_only,
+        pdf_bins=args.pdf_bins,
     )

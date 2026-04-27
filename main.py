@@ -99,6 +99,17 @@ Examples:
         help="Optional plot-time normalization for rendered slice values. Saved slice-data HDF5 values remain raw. Default is none.",
     )
     parser.add_argument(
+        "--slice-pdf-only",
+        action="store_true",
+        help="Skip slice-image rendering and only compute/store the configured full-field PDFs during the slice stage.",
+    )
+    parser.add_argument(
+        "--slice-pdf-bins",
+        type=int,
+        default=256,
+        help="Number of bins for stored full-field PDFs generated during the slice stage. Default is 256.",
+    )
+    parser.add_argument(
         "--slice-figsize",
         type=float,
         default=8.0,
@@ -281,6 +292,8 @@ Examples:
                         save_slice_data=not args.no_slice_data,
                         value_normalization=args.slice_value_normalization,
                         thermo_gamma=args.gamma,
+                        pdf_only=args.slice_pdf_only,
+                        pdf_bins=args.slice_pdf_bins,
                         slice_data_output=(
                             args.slice_data_output
                             if idx == 0 and write_idx == 0
@@ -322,7 +335,7 @@ Examples:
             if fft_results:
                 print("FFT/spectra step completed.")
             if slice_outputs:
-                print("Slice plot outputs:")
+                print("Slice/PDF outputs:")
                 for path in slice_outputs:
                     print(f"  {path}")
             if slice_data_outputs:

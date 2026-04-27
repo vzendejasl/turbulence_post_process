@@ -8,7 +8,7 @@ import h5py
 import numpy as np
 
 
-SLICE_SCHEMA_VERSION = 2
+SLICE_SCHEMA_VERSION = 3
 
 PLANE_AXES = {
     "x": ("z", "y"),
@@ -119,6 +119,7 @@ def initialize_slice_data_file(
         grid_group.create_dataset("y", data=np.asarray(meta["y"], dtype=np.float64))
         grid_group.create_dataset("z", data=np.asarray(meta["z"], dtype=np.float64))
 
+        hf.create_group("pdfs")
         slices_group = hf.create_group("slices")
         for dataset_name, field_label, latex_label, field_family in field_specs:
             field_group = slices_group.create_group(field_label)
@@ -239,4 +240,50 @@ def load_saved_slice(filepath, field_name, slice_tag):
             "coord_horizontal": np.asarray(slice_group["coord_horizontal"][:], dtype=np.float64),
             "coord_vertical": np.asarray(slice_group["coord_vertical"][:], dtype=np.float64),
             "attrs": {key: slice_group.attrs[key] for key in slice_group.attrs},
+        }
+
+
+def save_pdf_serial(filepath, pdf_name, pdf_result):
+    """Persist one generic field PDF under the combined slice-data HDF5 file."""
+    with h5py.File(filepath, "r+") as hf:
+        pdfs_group = hf.require_group("pdfs")
+        if pdf_name in pdfs_group:
+            del pdfs_group[pdf_name]
+        pdf_group = pdfs_group.create_group(pdf_name)
+        for dataset_name in ("bin_edges", "bin_centers", "counts", "pdf"):
+            pdf_group.create_dataset(dataset_name, data=np.asarray(pdf_result[dataset_name]))
+        for attr_name, attr_value in pdf_result.items():
+            if attr_name in {"bin_edges", "bin_centers", "counts", "pdf"}:
+                continue
+            if isinstance(attr_value, np.generic):
+                attr_value = attr_value.item()
+            pdf_group.attrs[attr_name] = attr_value
+
+
+def list_available_pdfs(filepath):
+    """Return the stored PDF names and summary metadata from one slice-data file."""
+    with h5py.File(filepath, "r") as hf:
+        if "pdfs" not in hf:
+            return {}
+        summary = {}
+        for pdf_name in sorted(hf["pdfs"].keys()):
+            pdf_group = hf["pdfs"][pdf_name]
+            summary[pdf_name] = {
+                "source_field": str(pdf_group.attrs.get("source_field", "")),
+                "normalization": str(pdf_group.attrs.get("normalization", "")),
+                "bin_count": int(pdf_group.attrs.get("bin_count", 0)),
+            }
+        return summary
+
+
+def load_saved_pdf(filepath, pdf_name):
+    """Load one stored field PDF plus metadata from a combined slice-data file."""
+    with h5py.File(filepath, "r") as hf:
+        pdf_group = hf["pdfs"][pdf_name]
+        return {
+            "bin_edges": np.asarray(pdf_group["bin_edges"][:], dtype=np.float64),
+            "bin_centers": np.asarray(pdf_group["bin_centers"][:], dtype=np.float64),
+            "counts": np.asarray(pdf_group["counts"][:]),
+            "pdf": np.asarray(pdf_group["pdf"][:], dtype=np.float64),
+            "attrs": {key: pdf_group.attrs[key] for key in pdf_group.attrs},
         }
