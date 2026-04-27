@@ -7,7 +7,15 @@ Example commands:
       1 -> vorticity_magnitude
       2 -> velocity_magnitude
       3 -> the saved scalar field when there is exactly one scalar field
-      div_u, sound_speed, mach_number, q_criterion, r_criterion, and density_gradient_magnitude are available by explicit field name when present
+      4 -> div_u
+      5 -> q_criterion
+      6 -> r_criterion
+      7 -> density_gradient_magnitude
+      8 -> sound_speed
+      9 -> mach_number
+      Explicit or normalized names are also accepted when present, for example:
+      div_u / "div u" / divergence, q_criterion / "q criterion", r_criterion / "r criterion",
+      sound_speed / "sound speed", mach_number / mach, and density_gradient_magnitude / "density gradient magnitude"
     --slice selects which saved plane to render using:
       1 -> xy_center
       2 -> xy_face
@@ -71,6 +79,41 @@ CONTOUR_LABEL_FONTSIZE = 8
 FIELD_SHORTCUTS = {
     "1": "vorticity_magnitude",
     "2": "velocity_magnitude",
+    "4": "div_u",
+    "5": "q_criterion",
+    "6": "r_criterion",
+    "7": "density_gradient_magnitude",
+    "8": "sound_speed",
+    "9": "mach_number",
+}
+FIELD_SELECTOR_ALIASES = {
+    "vorticity": "vorticity_magnitude",
+    "vorticity_magnitude": "vorticity_magnitude",
+    "velocity": "velocity_magnitude",
+    "velocity_magnitude": "velocity_magnitude",
+    "divergence": "div_u",
+    "div_u": "div_u",
+    "divu": "div_u",
+    "div(u)": "div_u",
+    "q": "q_criterion",
+    "qcriterion": "q_criterion",
+    "q_criterion": "q_criterion",
+    "q-criterion": "q_criterion",
+    "r": "r_criterion",
+    "rcriterion": "r_criterion",
+    "r_criterion": "r_criterion",
+    "r-criterion": "r_criterion",
+    "density_gradient": "density_gradient_magnitude",
+    "densitygradient": "density_gradient_magnitude",
+    "density_gradient_magnitude": "density_gradient_magnitude",
+    "density-gradient-magnitude": "density_gradient_magnitude",
+    "sound_speed": "sound_speed",
+    "soundspeed": "sound_speed",
+    "sound-speed": "sound_speed",
+    "mach": "mach_number",
+    "mach_number": "mach_number",
+    "machnumber": "mach_number",
+    "mach-number": "mach_number",
 }
 SLICE_SHORTCUTS = {
     "1": "xy_center",
@@ -116,6 +159,25 @@ def _field_family_map(filepath):
         }
 
 
+def _normalize_field_selector(field_name):
+    """Return a normalized token for forgiving field-selector matching."""
+    normalized = str(field_name).strip().lower()
+    for old, new in {
+        " ": "_",
+        "-": "_",
+        "/": "_",
+    }.items():
+        normalized = normalized.replace(old, new)
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    return normalized.strip("_")
+
+
+def _available_field_names(filepath):
+    """Return the stored field names present in one slice-data file."""
+    return list(_list_available_slices(filepath)["fields"].keys())
+
+
 def _resolve_field_name(filepath, field_name):
     """Resolve numeric field shortcuts to stored slice field names."""
     if field_name is None:
@@ -123,7 +185,14 @@ def _resolve_field_name(filepath, field_name):
 
     field_name = str(field_name).strip()
     if field_name in FIELD_SHORTCUTS:
-        return FIELD_SHORTCUTS[field_name]
+        resolved_name = FIELD_SHORTCUTS[field_name]
+        available_fields = _available_field_names(filepath)
+        if resolved_name in available_fields:
+            return resolved_name
+        raise SystemExit(
+            f"Field selector '{field_name}' resolved to '{resolved_name}', but that field was not detected in "
+            f"{os.path.abspath(filepath)}. Available fields: {', '.join(sorted(available_fields))}"
+        )
 
     if field_name == "3":
         family_map = _field_family_map(filepath)
@@ -136,6 +205,35 @@ def _resolve_field_name(filepath, field_name):
             "Field selector '3' is ambiguous because multiple scalar fields were saved: "
             + ", ".join(scalar_fields)
             + ". Use the explicit field name instead."
+        )
+
+    available_fields = _available_field_names(filepath)
+    if field_name.isdigit():
+        valid_selectors = ", ".join(["1", "2", "3", "4", "5", "6", "7", "8", "9"])
+        raise SystemExit(
+            f"Unknown field selector '{field_name}'. Valid numeric selectors: {valid_selectors}. "
+            f"Available fields in {os.path.abspath(filepath)}: {', '.join(sorted(available_fields))}"
+        )
+    if field_name in available_fields:
+        return field_name
+
+    normalized_input = _normalize_field_selector(field_name)
+    alias_target = FIELD_SELECTOR_ALIASES.get(normalized_input)
+    if alias_target is not None:
+        if alias_target in available_fields:
+            return alias_target
+        raise SystemExit(
+            f"Field selector '{field_name}' resolved to '{alias_target}', but that field was not detected in "
+            f"{os.path.abspath(filepath)}. Available fields: {', '.join(sorted(available_fields))}"
+        )
+
+    normalized_matches = [name for name in available_fields if _normalize_field_selector(name) == normalized_input]
+    if len(normalized_matches) == 1:
+        return normalized_matches[0]
+    if len(normalized_matches) > 1:
+        raise SystemExit(
+            f"Field selector '{field_name}' is ambiguous in {os.path.abspath(filepath)}. "
+            f"Matching fields: {', '.join(sorted(normalized_matches))}"
         )
 
     return field_name
@@ -582,6 +680,11 @@ def _comparison_label(slice_file, field_name, saved_attrs):
 def print_summary(filepath):
     """Print a concise summary of what can be replotted from one slice-data file."""
     summary = _list_available_slices(filepath)
+    selector_labels = {
+        field_name: selector
+        for selector, field_name in FIELD_SHORTCUTS.items()
+        if field_name in summary["fields"]
+    }
     print(f"Slice file: {os.path.abspath(filepath)}")
     print(f"Source file: {summary['source_file']}")
     print(f"Source HDF5: {summary['source_h5']}")
@@ -590,7 +693,8 @@ def print_summary(filepath):
     print(f"Grid shape: {summary['grid_shape']}")
     print("Available fields and slices:")
     for field_name, slice_tags in summary["fields"].items():
-        print(f"  {field_name}: {', '.join(slice_tags)}")
+        selector_text = f" [{selector_labels[field_name]}]" if field_name in selector_labels else ""
+        print(f"  {field_name}{selector_text}: {', '.join(slice_tags)}")
 
 
 def output_stem(source_path, field_name):
@@ -1645,7 +1749,7 @@ def main():
     parser.add_argument(
         "--field",
         default=None,
-        help="Field selector to replot: 1=vorticity_magnitude, 2=velocity_magnitude, 3=the saved scalar field when unique, or an explicit field name such as div_u, sound_speed, mach_number, q_criterion, r_criterion, or density_gradient_magnitude.",
+        help="Field selector to replot: 1=vorticity_magnitude, 2=velocity_magnitude, 3=the saved scalar field when unique, 4=div_u, 5=q_criterion, 6=r_criterion, 7=density_gradient_magnitude, 8=sound_speed, 9=mach_number, or a stored/normalized field name such as 'div u', divergence, 'q criterion', 'sound speed', or mach.",
     )
     parser.add_argument(
         "--slice",
