@@ -1329,3 +1329,326 @@ tools/ComputeSpectra.py
   - For the structured HDF5 schema above, each rank reads its local HDF5 slab directly.
   - FFTs and spectral decomposition are distributed through HeFFTe/MPI.
   - Legacy flat HDF5/TXT still uses rank 0 reconstruction plus scatter.
+
+================================================================================
+RZADAMS
+================================================================================
+
+
+## Final outcome
+
+| Component | Status |
+|---|---|
+| Conda env in workspace | built |
+| `mpi4py` | built against Cray MPICH |
+| `h5py` | built with MPI enabled |
+| HeFFTe | built and importable |
+| FFTW backend in HeFFTe | enabled |
+
+---
+
+# 1. Create and activate the conda env in workspace
+
+```bash
+conda create -y -p /usr/workspace/zendejas/turbulence_post_process/.conda/envs/heffte-py-rzadams python=3.11
+conda activate /usr/workspace/zendejas/turbulence_post_process/.conda/envs/heffte-py-rzadams
+```
+
+Install base packages:
+
+```bash
+conda install -c conda-forge numpy scipy matplotlib pandas cython cmake git pip -y
+```
+
+Optional, if you want plotting support:
+
+```bash
+conda install -c conda-forge yt -y
+```
+
+---
+
+# 2. Load the working module stack
+
+This was the working build stack:
+
+```bash
+module --force purge
+module load PrgEnv-gnu/8.7.0
+module load gcc/12.2.0
+module load cmake/3.29.2
+module load craype-x86-trento
+module load cray-fftw/3.3.10.11
+```
+
+Notes:
+
+| Module | Why |
+|---|---|
+| `PrgEnv-gnu/8.7.0` | required by Cray compiler wrappers |
+| `gcc/12.2.0` | matched the GNU stack we used |
+| `cmake/3.29.2` | for HeFFTe build |
+| `craype-x86-trento` | sets target for this machine family |
+| `cray-fftw/3.3.10.11` | FFTW for HeFFTe |
+
+Also loaded implicitly through `PrgEnv-gnu`:
+
+| Implicit module | Purpose |
+|---|---|
+| `cray-mpich/8.1.25` | MPI |
+| `cray-libsci/21.08.1.2` | math libs |
+
+---
+
+# 3. Export the critical library paths
+
+These exports were needed for successful builds:
+
+```bash
+export HDF5_MPI=ON
+export HDF5_DIR=/opt/cray/pe/hdf5-parallel/1.14.3.7/cray/20.0
+export PMI_LIBDIR=/opt/cray/pe/lib64
+export CCE_LIBDIR=/opt/cray/pe/lib64/cce
+export LIBRARY_PATH=${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LIBRARY_PATH:-}
+export LD_LIBRARY_PATH=${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LD_LIBRARY_PATH:-}
+export LDFLAGS="-L${CCE_LIBDIR} -L${PMI_LIBDIR} -L${HDF5_DIR}/lib ${LDFLAGS:-}"
+```
+
+These fixed:
+
+| Problem | Fix |
+|---|---|
+| missing `libpmi.so` / `libpmi2.so` | `/opt/cray/pe/lib64` |
+| missing `libmodules.so.1` | `/opt/cray/pe/lib64/cce` |
+| HDF5 runtime loading | `HDF5_DIR` and HDF5 lib path |
+
+---
+
+# 4. Build `mpi4py`
+
+We used the Cray compiler wrapper from the active module stack:
+
+```bash
+python -m pip uninstall -y mpi4py
+MPICC=$(which cc) \
+python -m pip install --no-cache-dir --force-reinstall \
+  --no-build-isolation --no-binary=mpi4py mpi4py
+```
+
+Verification:
+
+```bash
+python -c "import mpi4py, mpi4py.MPI as MPI; print('mpi4py =', mpi4py.__version__); print(MPI.Get_library_version().splitlines()[0])"
+ldd $(python -c "import mpi4py.MPI as m; print(m.__file__)") | egrep 'mpi|mpich|pmi|cray'
+```
+
+Expected result you got:
+
+| Check | Result |
+|---|---|
+| `mpi4py` version | `4.1.1` |
+| MPI runtime | `CRAY MPICH version 8.1.12.35` |
+
+---
+
+# 5. Build MPI-enabled `h5py`
+
+We built `h5py` from source against Cray parallel HDF5, and used `--no-deps` so pip would not replace the already-working `mpi4py`.
+
+```bash
+python -m pip uninstall -y h5py
+env CC=$(which cc) \
+    HDF5_MPI=ON \
+    HDF5_DIR=${HDF5_DIR} \
+    python -m pip install --no-cache-dir --force-reinstall \
+    --no-build-isolation --no-binary=h5py --no-deps h5py
+```
+
+Verification:
+
+```bash
+python -c "import h5py; print('h5py =', h5py.__version__); print('h5py mpi =', h5py.get_config().mpi)"
+ldd $(python -c "import h5py.h5 as h; print(h.__file__)") | egrep 'mpi|mpich|pmi|hdf5|cray|modules'
+```
+
+Expected result you got:
+
+| Check | Result |
+|---|---|
+| `h5py` version | `3.16.0` |
+| `h5py.get_config().mpi` | `True` |
+
+---
+
+# 6. Build HeFFTe
+
+We used `x86_milan` as the FFTW root because `craype-x86-trento` was loaded, but no `x86_trento` FFTW directory existed under `/opt/cray/pe/fftw/3.3.10.11`.
+
+Set build variables:
+
+```bash
+cd /usr/workspace/zendejas/turbulence_post_process
+
+export MPICC=$(which cc)
+export MPICXX=$(which CC)
+export PYTHON_EXE=$(which python)
+export FFTW_ROOT=/opt/cray/pe/fftw/3.3.10.11/x86_milan
+```
+
+Clone HeFFTe if needed:
+
+```bash
+git clone --depth 1 https://github.com/icl-utk-edu/heffte.git third_party/heffte
+```
+
+Configure:
+
+```bash
+cmake -S third_party/heffte -B third_party/heffte/build \
+  -D CMAKE_BUILD_TYPE=Release \
+  -D BUILD_SHARED_LIBS=ON \
+  -D CMAKE_INSTALL_PREFIX=$PWD/third_party/heffte/install \
+  -D CMAKE_C_COMPILER=${MPICC} \
+  -D CMAKE_CXX_COMPILER=${MPICXX} \
+  -D FFTW_ROOT=${FFTW_ROOT} \
+  -D Heffte_ENABLE_FFTW=ON \
+  -D Heffte_ENABLE_PYTHON=ON \
+  -D Python_EXECUTABLE=${PYTHON_EXE}
+```
+
+Build and install:
+
+```bash
+cmake --build third_party/heffte/build -j8
+cmake --install third_party/heffte/build
+```
+
+If needed, the fallback install copy command was:
+
+```bash
+mkdir -p $PWD/third_party/heffte/install/lib64
+cp -P third_party/heffte/build/libheffte.so* $PWD/third_party/heffte/install/lib64/
+```
+
+---
+
+# 7. Export HeFFTe runtime paths
+
+```bash
+export PYTHONPATH=$PWD/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
+export LD_LIBRARY_PATH=$PWD/third_party/heffte/install/lib64:$PWD/third_party/heffte/install/lib:${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LD_LIBRARY_PATH:-}
+```
+
+Verification:
+
+```bash
+python -c "import heffte; print('HeFFTe =', heffte.__version__)"
+python -c "import heffte; print('FFTW enabled =', heffte.heffte_config.enable_fftw)"
+python -c "import heffte; print('libheffte path =', heffte.heffte_config.libheffte_path)"
+```
+
+Expected result you got:
+
+| Check | Result |
+|---|---|
+| HeFFTe version | `2.4.1` |
+| FFTW enabled | `True` |
+| lib path | `/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib64/libheffte.so` |
+
+---
+
+# 8. Recommended reusable setup script
+
+Save this as `env_rzadams.sh` in your repo:
+
+```bash
+#!/bin/bash
+
+module --force purge
+module load PrgEnv-gnu/8.7.0
+module load gcc/12.2.0
+module load cmake/3.29.2
+module load craype-x86-trento
+module load cray-fftw/3.3.10.11
+
+source /collab/usr/gapps/python/toss_4_x86_64_ib/anaconda3-2023.03/etc/profile.d/conda.sh
+conda activate /usr/workspace/zendejas/turbulence_post_process/.conda/envs/heffte-py-rzadams
+
+export HDF5_MPI=ON
+export HDF5_DIR=/opt/cray/pe/hdf5-parallel/1.14.3.7/cray/20.0
+export PMI_LIBDIR=/opt/cray/pe/lib64
+export CCE_LIBDIR=/opt/cray/pe/lib64/cce
+
+export PYTHONPATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
+export LD_LIBRARY_PATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib64:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib:${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LD_LIBRARY_PATH:-}
+export LIBRARY_PATH=${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LIBRARY_PATH:-}
+export LDFLAGS="-L${CCE_LIBDIR} -L${PMI_LIBDIR} -L${HDF5_DIR}/lib ${LDFLAGS:-}"
+export OMP_NUM_THREADS=1
+```
+
+Use it with:
+
+```bash
+source env_rzadams.sh
+```
+
+---
+
+# 9. Runtime launcher note
+
+From your latest shell, `srun` disappeared after module purge, but `flux` works.
+
+So for runtime testing on rzadams, use **Flux** unless your site tells you otherwise.
+
+Example:
+
+```bash
+flux run -n 2 python - <<'PY'
+from mpi4py import MPI
+import h5py
+import heffte
+comm = MPI.COMM_WORLD
+print(f"rank {comm.rank}: h5py_mpi={h5py.get_config().mpi}, heffte={heffte.__version__}")
+PY
+```
+
+---
+
+# Short build cheat sheet
+
+| Task | Command core |
+|---|---|
+| create env | `conda create -p ... python=3.11` |
+| activate env | `conda activate /usr/workspace/.../heffte-py-rzadams` |
+| load modules | `PrgEnv-gnu`, `gcc/12.2.0`, `cmake/3.29.2`, `craype-x86-trento`, `cray-fftw/3.3.10.11` |
+| build `mpi4py` | `MPICC=$(which cc) pip install --no-binary=mpi4py mpi4py` |
+| build `h5py` | `CC=$(which cc) HDF5_MPI=ON HDF5_DIR=... pip install --no-binary=h5py --no-deps h5py` |
+| build HeFFTe | `cmake ... -D FFTW_ROOT=/opt/cray/pe/fftw/3.3.10.11/x86_milan ...` |
+
+If you want, I can turn this into either:
+
+| Option | Output |
+|---|---|
+| 1 | a polished `env_rzadams.sh` |
+| 2 | a one-time bootstrap script that rebuilds everything |
+| 3 | a `flux run` test script for your repo |
+
+#!/bin/bash
+module --force purge
+module load PrgEnv-gnu/8.7.0
+module load gcc/12.2.0
+module load cmake/3.29.2
+module load craype-x86-trento
+module load cray-fftw/3.3.10.11
+
+source /collab/usr/gapps/python/toss_4_x86_64_ib/anaconda3-2023.03/etc/profile.d/conda.sh
+conda activate /usr/workspace/zendejas/turbulence_post_process/.conda/envs/heffte-py-rzadams
+
+export HDF5_MPI=ON
+export HDF5_DIR=/opt/cray/pe/hdf5-parallel/1.14.3.7/cray/20.0
+export PMI_LIBDIR=/opt/cray/pe/lib64
+export CCE_LIBDIR=/opt/cray/pe/lib64/cce
+export PYTHONPATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
+export LD_LIBRARY_PATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib64:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib:${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LD_LIBRARY_PATH:-}
+export OMP_NUM_THREADS=1
+
