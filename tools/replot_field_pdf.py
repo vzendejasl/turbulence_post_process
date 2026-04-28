@@ -1,47 +1,55 @@
 #!/usr/bin/env python3
 """Inspect, export, and replot stored full-field PDFs from a *_slices.h5 file.
 
-Usage examples
---------------
-# List available PDFs in a slice-data file:
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --list
+Examples:
+  List stored PDFs:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --list
 
-# Replot the normalized dilatation PDF (log y-scale, default range):
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation
+  Print metadata for one stored PDF:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+      --pdf normalized_dilatation \
+      --metadata
 
-# Replot by numeric selector shown in --list output:
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf 1
+  Replot the normalized dilatation PDF:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf normalized_dilatation
 
-# Replot the normalized velocity, density, pressure, or Mach-number PDF:
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_velocity_magnitude
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_density
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_pressure
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_mach_number
+  Replot by numeric selector shown in --list output:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf 1
 
-# Use the normalized convenience flag with a field shorthand:
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf density --normalized
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf mach --normalized
+  Replot the normalized velocity, density, pressure, or Mach-number PDF:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf normalized_velocity_magnitude
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf normalized_density
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf normalized_pressure
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf normalized_mach_number
 
-# Log y-scale (saves as *_log_scale.pdf to avoid overwriting the linear plot):
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --y-scale log
+  Use the normalized convenience flag with a field shorthand:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf density --normalized
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf mach --normalized
 
-# Restrict the x-axis range to [-20, 20]:
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --x-range -20 20
+  Replot on a logarithmic y-axis:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+      --pdf normalized_dilatation \
+      --y-scale log
 
-# Combine options (log scale, custom range, PNG output):
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --y-scale log --x-range -20 20 --format png
+  Replot the stored normalized PDF back in raw field units:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+      --pdf normalized_dilatation \
+      --x-normalization raw
 
-# Rescale x-axis back to raw (unnormalized) field units:
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --x-normalization raw
+  Restrict the x-axis range to [-20, 20]:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+      --pdf normalized_dilatation \
+      --x-range -20 20
 
-# Export PDF data to CSV:
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --export-csv dilatation_pdf.csv
+  Export PDF data to CSV:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+      --pdf normalized_dilatation \
+      --export-csv dilatation_pdf.csv
 
-# Print stored metadata:
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --metadata
-
-# Save to a custom output path:
-  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --output my_plot.pdf
+  Save to a custom output path:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+      --pdf normalized_dilatation \
+      --output my_plot.pdf
 """
 
 from __future__ import annotations
@@ -60,6 +68,7 @@ from postprocess_vis.pdfs import FIELD_PDF_REGISTRY
 from postprocess_vis.pdfs import field_pdf_output_path
 from postprocess_vis.pdfs import field_pdf_metadata_text
 from postprocess_vis.pdfs import plot_field_pdf
+from postprocess_vis.pdfs import rescale_field_pdf_for_plot
 from postprocess_vis.slice_data import list_available_pdfs
 from postprocess_vis.slice_data import load_saved_pdf
 
@@ -146,7 +155,9 @@ def print_pdf_metadata(filepath, pdf_name):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Inspect and replot stored full-field PDFs from a *_slices.h5 file.")
+    parser = argparse.ArgumentParser(
+        description="Inspect and replot stored full-field PDFs from a *_slices.h5 file."
+    )
     parser.add_argument("slice_file", help="Path to a combined *_slices.h5 file")
     parser.add_argument("--list", action="store_true", help="Print the available stored PDFs, then exit.")
     parser.add_argument(
@@ -162,19 +173,23 @@ def main():
         action="store_true",
         help="Interpret short field names passed to --pdf as normalized PDF names, e.g. --pdf density --normalized or --pdf mach --normalized.",
     )
-    parser.add_argument("--output", default=None, help="Optional output plot path")
-    parser.add_argument("--format", default="pdf", choices=["pdf", "png"], help="Output image format when --output is omitted.")
+    parser.add_argument("--output", "--out", dest="output", default=None, help="Optional output plot path")
+    parser.add_argument("--format", "--fmt", dest="format", default="pdf", choices=["pdf", "png"], help="Output image format when --output is omitted.")
     parser.add_argument("--plot", action="store_true", help="Also display the plot after saving")
-    parser.add_argument("--metadata", action="store_true", help="Print the stored metadata for the selected PDF.")
-    parser.add_argument("--export-csv", default=None, help="Optional CSV export path for the selected PDF data.")
+    parser.add_argument("--metadata", "--meta", dest="metadata", action="store_true", help="Print the stored metadata for the selected PDF.")
+    parser.add_argument("--export-csv", "--csv", dest="export_csv", default=None, help="Optional CSV export path for the selected PDF data.")
     parser.add_argument(
         "--y-scale",
+        "--yscale",
+        dest="y_scale",
         default="log",
         choices=["linear", "log"],
         help="Vertical scale for the plotted PDF. Default is 'log'.",
     )
     parser.add_argument(
         "--x-normalization",
+        "--x-norm",
+        dest="x_normalization",
         default="stored",
         choices=["stored", "raw"],
         help="How to plot the x-axis. 'stored' uses the saved PDF variable, 'raw' rescales back to the original field units when the stored normalization scale is available.",
@@ -226,6 +241,7 @@ def main():
         print(f"Saved CSV: {os.path.abspath(args.export_csv)}")
 
     output_anchor = str(pdf_result.get("source_h5", args.slice_file))
+    plotted_pdf_result = rescale_field_pdf_for_plot(pdf_result, x_normalization=args.x_normalization)
     output_path = args.output or field_pdf_output_path(output_anchor, resolved_pdf_name, output_format=args.format)
     if args.y_scale != "linear" and not args.output:
         stem, ext = os.path.splitext(output_path)
@@ -239,6 +255,16 @@ def main():
         x_range=args.x_range,
         backend="yt",
     )
+    print(
+        "X range for plot: "
+        f"[{float(plotted_pdf_result['bin_edges'][0]):.6g}, {float(plotted_pdf_result['bin_edges'][-1]):.6g}] "
+        f"({args.x_normalization} units)"
+    )
+    if args.x_normalization != "stored":
+        print(
+            "Stored normalized x range: "
+            f"[{float(pdf_result['bin_edges'][0]):.6g}, {float(pdf_result['bin_edges'][-1]):.6g}]"
+        )
     print(f"Saved field PDF plot: {output_path}")
 
 

@@ -290,7 +290,7 @@ def write_field_pdf_metadata(output_path, pdf_result):
     return metadata_path
 
 
-def _rescale_pdf_result_for_plot(pdf_result, x_normalization="stored"):
+def rescale_field_pdf_for_plot(pdf_result, x_normalization="stored"):
     """Return a plotting copy of one stored PDF result with optional x-axis rescaling."""
     resolved = str(x_normalization or "stored").strip().lower()
     if resolved not in {"stored", "raw"}:
@@ -453,7 +453,7 @@ def plot_field_pdf(
     backend="yt",
 ):
     """Plot one stored field PDF to disk using the requested rendering backend."""
-    plotted = _rescale_pdf_result_for_plot(pdf_result, x_normalization=x_normalization)
+    plotted = rescale_field_pdf_for_plot(pdf_result, x_normalization=x_normalization)
     resolved_y_scale = str(y_scale or "linear").strip().lower()
     if resolved_y_scale not in {"linear", "log"}:
         raise ValueError(f"Unsupported y_scale '{y_scale}'. Use one of: linear, log.")

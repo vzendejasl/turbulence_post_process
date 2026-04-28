@@ -1354,7 +1354,16 @@ def run_visualization(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Render one or more velocity slices from TXT or structured HDF5")
+    parser = argparse.ArgumentParser(
+        description="Render one or more velocity slices from TXT or structured HDF5",
+        epilog=(
+            "Examples:\n"
+            "  python tools/visualize_velocity_yt.py data/SampledData0.h5 --field div_u --slice z:center\n"
+            "  python tools/visualize_velocity_yt.py data/SampledData0.h5 --field div_u --norm global_rms\n"
+            "  python tools/visualize_velocity_yt.py data/SampledData0.h5 --pdf-only --pdf-bins 128\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("data_file", help="Path to a SampledData .txt or structured .h5 file")
     parser.add_argument(
         "--slice",
@@ -1374,12 +1383,13 @@ def main():
     parser.add_argument("--format", default="pdf", choices=["pdf", "png"], help="Output image format. Default is pdf.")
     parser.add_argument("--dpi", type=int, default=600, help="Raster save DPI. Default is 600.")
     parser.add_argument("--figsize", type=float, default=8.0, help="Square figure size in inches. Default is 8.0.")
-    parser.add_argument("--output", default=None, help="Optional output path for a single slice")
+    parser.add_argument("--output", "--out", dest="output", default=None, help="Optional output path for a single slice")
     parser.add_argument("--plot", action="store_true", help="Also display the plot on rank 0 after saving")
     parser.add_argument("--no-slice-data", action="store_true", help="Skip writing the combined *_slices.h5 file.")
-    parser.add_argument("--slice-data-output", default=None, help="Optional path for the combined slice-data HDF5 file.")
+    parser.add_argument("--slice-data-output", "--slice-data", dest="slice_data_output", default=None, help="Optional path for the combined slice-data HDF5 file.")
     parser.add_argument(
         "--value-normalization",
+        "--norm",
         default="none",
         choices=["none", "global_rms"],
         help="Optional plot-time normalization for rendered slice values. Saved slice-data HDF5 values remain raw.",

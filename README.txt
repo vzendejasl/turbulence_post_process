@@ -634,8 +634,19 @@ Replot with RMS normalization applied from the saved metadata:
 Compute and store only the full-field PDFs during the slice stage:
 
   mpirun -n 4 python main.py your_velocity_data.h5 \
-    --slice-pdf-only \
-    --slice-pdf-bins 256
+    --pdf-only \
+    --pdf-bins 256
+
+Change the stored PDF bin count:
+
+  mpirun -n 4 python main.py your_velocity_data.h5 \
+    --pdf-bins 128
+
+Short main.py aliases:
+  - `--pdf-only` is an alias for `--slice-pdf-only`
+  - `--pdf-bins` is an alias for `--slice-pdf-bins`
+  - `--slice-norm` is an alias for `--slice-value-normalization`
+  - `--out` is an alias for `--slice-output`
 
 PDF controls:
   - --slice-pdf-only
@@ -656,6 +667,9 @@ Inspect and replot stored full-field PDFs:
     --pdf normalized_dilatation \
     --metadata
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_velocity_magnitude \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
     --pdf normalized_density \
     --metadata
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
@@ -664,6 +678,24 @@ Inspect and replot stored full-field PDFs:
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
     --pdf normalized_mach_number \
     --metadata
+    --pdf normalized_dilatation \
+    --y-scale log
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_dilatation \
+    --x-normalization raw
+
+Short replot_field_pdf.py aliases:
+  - `--meta` for `--metadata`
+  - `--csv` for `--export-csv`
+  - `--yscale` for `--y-scale`
+  - `--x-norm` for `--x-normalization`
+  - `--out` for `--output`
+  - `--fmt` for `--format`
+
+Short replot_slice_data.py aliases:
+  - `--norm` for `--value-normalization`
+  - `--out` for `--output`
+  - `--fmt` for `--format`
 
 Example scalar workflow:
 
@@ -679,6 +711,19 @@ Useful controls:
   - --width <domain width>
   - --output <path>
   - --format {png,pdf}
+
+Field-PDF notes:
+  - `--slice-pdf-bins <N>` changes the number of histogram bins when the PDF is
+    computed and stored.  The shorter alias is `--pdf-bins <N>`.
+  - `tools/replot_field_pdf.py --y-scale log` does not change the stored PDF
+    values.  It only displays the y-axis on a logarithmic scale, so the plotted
+    quantity is still the same PDF density.
+  - `tools/replot_field_pdf.py --x-normalization raw` rescales the stored
+    normalized PDF back into raw field units on the x-axis when the saved
+    normalization scale is available.
+  - `tools/replot_field_pdf.py` now prints the plotted x-range after saving so
+    you can verify whether you are viewing stored normalized units or raw field
+    units.
 
 Optional yt adapter summary:
 

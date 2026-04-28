@@ -14,12 +14,12 @@ try:
 except ImportError:  # pragma: no cover - environment dependent
     MPI = None
 
-from postprocess_vis.pdfs import _rescale_pdf_result_for_plot
 from postprocess_vis.pdfs import _configure_pdf_axes
 from postprocess_vis.pdfs import _trimmed_decimal_label
 from postprocess_vis.pdfs import compute_distributed_field_pdf
 from postprocess_vis.pdfs import print_field_pdf_summary
 from postprocess_vis.pdfs import plot_field_pdf
+from postprocess_vis.pdfs import rescale_field_pdf_for_plot
 
 
 @unittest.skipIf(MPI is None, "mpi4py is not installed in this test environment")
@@ -138,7 +138,7 @@ class TestFieldPdf(unittest.TestCase):
             "normalization_offset": 0.0,
         }
 
-        raw = _rescale_pdf_result_for_plot(pdf_result, x_normalization="raw")
+        raw = rescale_field_pdf_for_plot(pdf_result, x_normalization="raw")
 
         np.testing.assert_allclose(raw["bin_edges"], np.array([-8.0, 0.0, 8.0], dtype=np.float64))
         np.testing.assert_allclose(raw["bin_centers"], np.array([-4.0, 4.0], dtype=np.float64))
@@ -161,7 +161,7 @@ class TestFieldPdf(unittest.TestCase):
             "normalization_offset": 1.0,
         }
 
-        raw = _rescale_pdf_result_for_plot(pdf_result, x_normalization="raw")
+        raw = rescale_field_pdf_for_plot(pdf_result, x_normalization="raw")
 
         self.assertEqual(raw["x_label"], r"$\rho$")
         np.testing.assert_allclose(raw["bin_edges"], np.array([1.0, 3.0, 5.0], dtype=np.float64))
