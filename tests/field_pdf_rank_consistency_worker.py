@@ -17,15 +17,17 @@ def _local_chunk(values):
 def collect_metrics() -> dict[str, object] | None:
     values = np.linspace(-4.0, 6.0, 4096, dtype=np.float64)
     local_values = _local_chunk(values)
-    rms = float(np.sqrt(np.mean(values**2)))
+    mean = float(np.mean(values))
+    std = float(np.std(values))
     result = compute_distributed_field_pdf(
         local_values,
         MPI.COMM_WORLD,
         bins=64,
-        normalization_scale=rms,
+        normalization_scale=std,
+        normalization_offset=mean,
         pdf_name="normalized_dilatation",
         source_field="div_u",
-        normalization="global_rms",
+        normalization="global_std",
         plot_title="Normalized Dilatation PDF",
     )
     if MPI.COMM_WORLD.rank != 0:

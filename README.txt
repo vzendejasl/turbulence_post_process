@@ -442,6 +442,8 @@ Optional scalar field inputs:
       --slice-field pressure
       --slice-field temperature
   - the same default slices are then written for velocity, vorticity, Q, R, and all appended scalars
+  - when both density and pressure are present, Mach number is also included in
+    the default slice-field set
   - current restriction: when using --scalar-file, main.py expects one primary
     velocity input file per run
 
@@ -600,9 +602,11 @@ The slice workflow now also writes one combined HDF5 file:
   data/slice_data/SampledData0_slices.h5
 
 That same file can now also store full-field PDFs under a top-level `pdfs/`
-group.  The first built-in PDF is the normalized dilatation PDF:
+group. Built-in PDFs currently include:
 
   chi = div_u / rms(div_u)
+  rho_hat = density / rms(density)
+  p_hat = pressure / rms(pressure)
 
 The PDF currently uses a variable bin range taken from the global min/max of
 the normalized field.  This is convenient for first-pass analysis, but it means
@@ -630,8 +634,31 @@ Replot with RMS normalization applied from the saved metadata:
 Compute and store only the full-field PDFs during the slice stage:
 
   mpirun -n 4 python main.py your_velocity_data.h5 \
-    --slice-pdf-only \
-    --slice-pdf-bins 256
+    --pdf-only \
+    --pdf-bins 256
+
+Change the stored PDF bin count:
+
+  mpirun -n 4 python main.py your_velocity_data.h5 \
+    --pdf-bins 128
+
+Short main.py aliases:
+  - `--pdf-only` is an alias for `--slice-pdf-only`
+  - `--pdf-bins` is an alias for `--slice-pdf-bins`
+  - `--slice-norm` is an alias for `--slice-value-normalization`
+  - `--out` is an alias for `--slice-output`
+
+PDF controls:
+  - --slice-pdf-only
+    computes/stores the full-field PDFs without rendering slice images
+  - --slice-pdf-bins <N>
+    sets the histogram bin count for the stored full-field PDFs
+  - default PDF bin count: 256
+  - yt only renders the already computed PDF curve; yt does not choose the
+    histogram bins
+  - these PDFs currently use a variable per-run GLOBAL min/max range, so they
+    are not directly comparable across runs unless rebinned/replotted onto a
+    shared fixed x-range
 
 Inspect and replot stored full-field PDFs:
 
@@ -639,6 +666,36 @@ Inspect and replot stored full-field PDFs:
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
     --pdf normalized_dilatation \
     --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_velocity_magnitude \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_density \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_pressure \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_mach_number \
+    --metadata
+    --pdf normalized_dilatation \
+    --y-scale log
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_dilatation \
+    --x-normalization raw
+
+Short replot_field_pdf.py aliases:
+  - `--meta` for `--metadata`
+  - `--csv` for `--export-csv`
+  - `--yscale` for `--y-scale`
+  - `--x-norm` for `--x-normalization`
+  - `--out` for `--output`
+  - `--fmt` for `--format`
+
+Short replot_slice_data.py aliases:
+  - `--norm` for `--value-normalization`
+  - `--out` for `--output`
+  - `--fmt` for `--format`
 
 Example scalar workflow:
 
@@ -654,6 +711,19 @@ Useful controls:
   - --width <domain width>
   - --output <path>
   - --format {png,pdf}
+
+Field-PDF notes:
+  - `--slice-pdf-bins <N>` changes the number of histogram bins when the PDF is
+    computed and stored.  The shorter alias is `--pdf-bins <N>`.
+  - `tools/replot_field_pdf.py --y-scale log` does not change the stored PDF
+    values.  It only displays the y-axis on a logarithmic scale, so the plotted
+    quantity is still the same PDF density.
+  - `tools/replot_field_pdf.py --x-normalization raw` rescales the stored
+    normalized PDF back into raw field units on the x-axis when the saved
+    normalization scale is available.
+  - `tools/replot_field_pdf.py` now prints the plotted x-range after saving so
+    you can verify whether you are viewing stored normalized units or raw field
+    units.
 
 Optional yt adapter summary:
 
@@ -1651,6 +1721,7 @@ export CCE_LIBDIR=/opt/cray/pe/lib64/cce
 export PYTHONPATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
 export LD_LIBRARY_PATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib64:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib:${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LD_LIBRARY_PATH:-}
 export OMP_NUM_THREADS=1
+<<<<<<< HEAD
 
 # I kept getting errors with the above bash script set up. This worked for me.
 
@@ -1673,3 +1744,5 @@ export CCE_LIBDIR=/opt/cray/pe/lib64/cce
 export PYTHONPATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib64:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib:${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LD_LIBRARY_PATH:-}
 export OMP_NUM_THREADS=1
+=======
+>>>>>>> a53ad85c603045a9fca7c8e26ed38f6948ae617d

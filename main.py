@@ -33,6 +33,8 @@ def main():
 Examples:
   mpirun -n 4 python main.py data/SampledData0.txt
   mpirun -n 4 python main.py data/SampledData0.h5
+  mpirun -n 4 python main.py data/SampledData0.h5 --pdf-only --pdf-bins 128
+  mpirun -n 4 python main.py data/SampledData0.h5 --slice-field div_u --slice-norm global_rms
         """,
     )
     parser.add_argument("data_files", nargs="+", help="One or more .txt or structured .h5 inputs")
@@ -81,7 +83,11 @@ Examples:
         "--slice-field",
         action="append",
         default=[],
-        help="Field for slice plots. Repeat to render multiple fields. Density-gradient magnitude is auto-appended when a density field exists.",
+        help=(
+            "Field for slice plots. Repeat to render multiple fields. "
+            "Density-gradient magnitude is auto-appended when a density field exists, "
+            "and Mach number is included by default when both density and pressure exist."
+        ),
     )
     parser.add_argument(
         "--scalar-file",
@@ -94,17 +100,20 @@ Examples:
     parser.add_argument("--slice-dpi", type=int, default=600, help="Slice image save DPI. Default is 600.")
     parser.add_argument(
         "--slice-value-normalization",
+        "--slice-norm",
         default="none",
         choices=["none", "global_rms"],
         help="Optional plot-time normalization for rendered slice values. Saved slice-data HDF5 values remain raw. Default is none.",
     )
     parser.add_argument(
         "--slice-pdf-only",
+        "--pdf-only",
         action="store_true",
         help="Skip slice-image rendering and only compute/store the configured full-field PDFs during the slice stage.",
     )
     parser.add_argument(
         "--slice-pdf-bins",
+        "--pdf-bins",
         type=int,
         default=256,
         help="Number of bins for stored full-field PDFs generated during the slice stage. Default is 256.",
@@ -123,6 +132,7 @@ Examples:
     )
     parser.add_argument(
         "--slice-output",
+        "--out",
         default=None,
         help="Optional output path for a single slice from a single input file.",
     )

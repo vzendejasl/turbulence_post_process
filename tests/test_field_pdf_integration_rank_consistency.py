@@ -63,7 +63,7 @@ class TestFieldPdfIntegrationRankConsistency(unittest.TestCase):
 
         reference = results[1]
         self.assertEqual(reference["source_field"], "div_u")
-        self.assertEqual(reference["normalization"], "global_rms")
+        self.assertEqual(reference["normalization"], "global_std")
         self.assertEqual(int(reference["total_samples"]), 64 * 64 * 64)
         self.assertEqual(int(reference["underflow_count"]), 0)
         self.assertEqual(int(reference["overflow_count"]), 0)
