@@ -18,7 +18,7 @@ FIELD_PDF_REGISTRY = {
         "source_field_family": "divergence",
         "normalization": "global_rms",
         "plot_title": "Normalized Dilatation PDF",
-        "x_label": r"$\nabla \cdot \mathbf{u} \,/\, \mathrm{rms}(\nabla \cdot \mathbf{u})$",
+        "x_label": r"$\theta / \text{std}(\theta)$",
         "y_label": "PDF",
     },
 }
@@ -240,30 +240,72 @@ def _rescale_pdf_result_for_plot(pdf_result, x_normalization="stored"):
     result["pdf"] = result["pdf"] / abs(scale)
     result["value_range_min"] = float(result["bin_edges"][0])
     result["value_range_max"] = float(result["bin_edges"][-1])
-    source_field = str(pdf_result.get("source_field", "field"))
-    result["x_label"] = source_field
+    result["x_label"] = r"$\theta$"
     result["plot_title"] = f"{pdf_result.get('plot_title', 'Field PDF')} [raw units]"
     result["x_normalization"] = "raw"
     return result
 
 
-def plot_field_pdf(pdf_result, output_path, *, plot=False, y_scale="linear", x_normalization="stored"):
-    """Plot one stored field PDF to disk."""
+def _plot_field_pdf_yt(plotted, output_path, *, plot=False, y_scale="linear", x_range=None):
+    """Plot one stored field PDF using yt's matplotlib styling and a LinePlot figure."""
+    import yt
     import matplotlib.pyplot as plt
 
-    plotted = _rescale_pdf_result_for_plot(pdf_result, x_normalization=x_normalization)
+    centers = np.asarray(plotted["bin_centers"], dtype=np.float64)
+    pdf_values = np.asarray(plotted["pdf"], dtype=np.float64)
+    x_min, x_max = float(centers[0]), float(centers[-1])
+
+    # Create a minimal yt LinePlot just to obtain a yt-styled figure/axes,
+    # then clear the axes and draw our own data so every bin is plotted
+    # correctly without yt's arc-length interpolation artifacts.
+    dummy = np.ones((2, 1, 1), dtype=np.float64)
+    bbox = np.array([[0.0, 1.0], [0.0, 1.0], [0.0, 1.0]], dtype=np.float64)
+    ds = yt.load_uniform_grid(
+        {"pdf": dummy}, dummy.shape, bbox=bbox, nprocs=1, periodicity=(False, False, False),
+    )
+    field = ("stream", "pdf")
+    lp = yt.LinePlot(ds, [field], (0.0, 0.5, 0.5), (1.0, 0.5, 0.5), 2)
+    lp._setup_plots()
+
+    plot_mpl = lp.plots[field]
+    ax = plot_mpl.axes
+    fig = plot_mpl.figure
+
+    ax.clear()
+    ax.plot(centers, pdf_values, color="black", linewidth=1.5)
+    ax.set_xlabel(str(plotted.get("x_label", "Value")))
+    ax.set_ylabel(str(plotted.get("y_label", "PDF")))
+    ax.set_title("")
+    if x_range is not None:
+        ax.set_xlim(float(x_range[0]), float(x_range[1]))
+    else:
+        ax.set_xlim(x_min, x_max)
+    if str(y_scale or "linear").strip().lower() == "log":
+        ax.set_yscale("log")
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(output_path, bbox_inches="tight")
+    if plot:
+        plt.show()
+    plt.close(fig)
+    return output_path
+
+
+def _plot_field_pdf_matplotlib(plotted, output_path, *, plot=False, y_scale="linear", x_range=None):
+    """Fallback matplotlib renderer for field PDFs."""
+    import matplotlib.pyplot as plt
+
     centers = np.asarray(plotted["bin_centers"], dtype=np.float64)
     pdf = np.asarray(plotted["pdf"], dtype=np.float64)
-    resolved_y_scale = str(y_scale or "linear").strip().lower()
-    if resolved_y_scale not in {"linear", "log"}:
-        raise ValueError(f"Unsupported y_scale '{y_scale}'. Use one of: linear, log.")
 
     fig, ax = plt.subplots(figsize=(7.0, 5.0))
     ax.plot(centers, pdf, color="black", linewidth=1.5)
     ax.set_xlabel(str(plotted.get("x_label", "Value")))
     ax.set_ylabel(str(plotted.get("y_label", "PDF")))
-    ax.set_title(str(plotted.get("plot_title", "Field PDF")))
-    if resolved_y_scale == "log":
+    ax.set_title("")
+    if x_range is not None:
+        ax.set_xlim(float(x_range[0]), float(x_range[1]))
+    if str(y_scale or "linear").strip().lower() == "log":
         ax.set_yscale("log")
     ax.grid(True, alpha=0.25)
     fig.tight_layout()
@@ -272,6 +314,21 @@ def plot_field_pdf(pdf_result, output_path, *, plot=False, y_scale="linear", x_n
         plt.show()
     plt.close(fig)
     return output_path
+
+
+def plot_field_pdf(pdf_result, output_path, *, plot=False, y_scale="linear", x_normalization="stored", x_range=None):
+    """Plot one stored field PDF to disk using yt when available, falling back to matplotlib."""
+    plotted = _rescale_pdf_result_for_plot(pdf_result, x_normalization=x_normalization)
+    resolved_y_scale = str(y_scale or "linear").strip().lower()
+    if resolved_y_scale not in {"linear", "log"}:
+        raise ValueError(f"Unsupported y_scale '{y_scale}'. Use one of: linear, log.")
+
+    try:
+        return _plot_field_pdf_yt(plotted, output_path, plot=plot, y_scale=resolved_y_scale, x_range=x_range)
+    except Exception as exc:
+        print(f"yt LinePlot backend unavailable, falling back to Matplotlib: {exc}")
+
+    return _plot_field_pdf_matplotlib(plotted, output_path, plot=plot, y_scale=resolved_y_scale, x_range=x_range)
 
 
 def export_field_pdf_csv(pdf_result, output_path):

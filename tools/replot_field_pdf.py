@@ -1,5 +1,35 @@
 #!/usr/bin/env python3
-"""Inspect, export, and replot stored full-field PDFs from a *_slices.h5 file."""
+"""Inspect, export, and replot stored full-field PDFs from a *_slices.h5 file.
+
+Usage examples
+--------------
+# List available PDFs in a slice-data file:
+  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --list
+
+# Replot the normalized dilatation PDF (linear scale, default range):
+  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation
+
+# Log y-scale (saves as *_log_scale.pdf to avoid overwriting the linear plot):
+  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --y-scale log
+
+# Restrict the x-axis range to [-20, 20]:
+  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --x-range -20 20
+
+# Combine options (log scale, custom range, PNG output):
+  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --y-scale log --x-range -20 20 --format png
+
+# Rescale x-axis back to raw (unnormalized) field units:
+  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --x-normalization raw
+
+# Export PDF data to CSV:
+  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --export-csv dilatation_pdf.csv
+
+# Print stored metadata:
+  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --metadata
+
+# Save to a custom output path:
+  python tools/replot_field_pdf.py data/SampledData0_slices.h5 --pdf normalized_dilatation --output my_plot.pdf
+"""
 
 from __future__ import annotations
 
@@ -13,6 +43,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from postprocess_vis.pdfs import export_field_pdf_csv
+from postprocess_vis.pdfs import FIELD_PDF_REGISTRY
 from postprocess_vis.pdfs import field_pdf_output_path
 from postprocess_vis.pdfs import field_pdf_metadata_text
 from postprocess_vis.pdfs import plot_field_pdf
@@ -68,6 +99,14 @@ def main():
         choices=["stored", "raw"],
         help="How to plot the x-axis. 'stored' uses the saved PDF variable, 'raw' rescales back to the original field units when the stored normalization scale is available.",
     )
+    parser.add_argument(
+        "--x-range",
+        type=float,
+        nargs=2,
+        metavar=("MIN", "MAX"),
+        default=None,
+        help="Optional x-axis display range, e.g. --x-range -20 20.",
+    )
     args = parser.parse_args()
 
     if args.list or args.pdf is None:
@@ -82,6 +121,13 @@ def main():
     pdf_result["counts"] = loaded["counts"]
     pdf_result["pdf"] = loaded["pdf"]
 
+    # Override stored labels with current registry values so old HDF5 files
+    # pick up label changes without needing to be recomputed.
+    if args.pdf in FIELD_PDF_REGISTRY:
+        for key in ("x_label", "y_label", "plot_title"):
+            if key in FIELD_PDF_REGISTRY[args.pdf]:
+                pdf_result[key] = FIELD_PDF_REGISTRY[args.pdf][key]
+
     if args.metadata:
         print(field_pdf_metadata_text(pdf_result), end="")
 
@@ -91,12 +137,16 @@ def main():
 
     output_anchor = str(pdf_result.get("source_h5", args.slice_file))
     output_path = args.output or field_pdf_output_path(output_anchor, args.pdf, output_format=args.format)
+    if args.y_scale != "linear" and not args.output:
+        stem, ext = os.path.splitext(output_path)
+        output_path = f"{stem}_{args.y_scale}_scale{ext}"
     plot_field_pdf(
         pdf_result,
         output_path,
         plot=args.plot,
         y_scale=args.y_scale,
         x_normalization=args.x_normalization,
+        x_range=args.x_range,
     )
     print(f"Saved field PDF plot: {output_path}")
 

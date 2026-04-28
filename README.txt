@@ -442,6 +442,8 @@ Optional scalar field inputs:
       --slice-field pressure
       --slice-field temperature
   - the same default slices are then written for velocity, vorticity, Q, R, and all appended scalars
+  - when both density and pressure are present, Mach number is also included in
+    the default slice-field set
   - current restriction: when using --scalar-file, main.py expects one primary
     velocity input file per run
 
@@ -1651,4 +1653,3 @@ export CCE_LIBDIR=/opt/cray/pe/lib64/cce
 export PYTHONPATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
 export LD_LIBRARY_PATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib64:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib:${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LD_LIBRARY_PATH:-}
 export OMP_NUM_THREADS=1
-

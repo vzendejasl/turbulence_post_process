@@ -49,7 +49,7 @@ class TestSliceFieldSpecs(unittest.TestCase):
 
         requested_fields = default_requested_field_names(field_lookup)
         self.assertEqual(
-            requested_fields[:6],
+            requested_fields[:7],
             [
                 "velocity_magnitude",
                 "vorticity_magnitude",
@@ -57,6 +57,7 @@ class TestSliceFieldSpecs(unittest.TestCase):
                 "q_criterion",
                 "r_criterion",
                 "density_gradient_magnitude",
+                "mach_number",
             ],
         )
         self.assertIn("density", requested_fields)

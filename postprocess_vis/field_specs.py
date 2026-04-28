@@ -33,7 +33,7 @@ BUILTIN_FIELD_MAP = {
     "wx": ("omega_x", "wx", r"$\omega_1$", "vorticity"),
     "wy": ("omega_y", "wy", r"$\omega_2$", "vorticity"),
     "wz": ("omega_z", "wz", r"$\omega_3$", "vorticity"),
-    "div_u": ("div_u", "div_u", r"$\nabla \cdot \mathbf{u}$", "divergence"),
+    "div_u": ("div_u", "div_u", r"$\theta$", "divergence"),
     "q_criterion": ("q_criterion", "q_criterion", r"$Q$", "qcriterion"),
     "r_criterion": ("r_criterion", "r_criterion", r"$R$", "rcriterion"),
 }
@@ -81,6 +81,8 @@ def default_requested_field_names(field_lookup):
     requested_fields = ["velocity_magnitude", "vorticity_magnitude", "div_u", "q_criterion", "r_criterion"]
     if DENSITY_GRADIENT_FIELD_NAME in field_lookup:
         requested_fields.append(DENSITY_GRADIENT_FIELD_NAME)
+    if MACH_NUMBER_FIELD_NAME in field_lookup:
+        requested_fields.append(MACH_NUMBER_FIELD_NAME)
     scalar_fields = [name for name, spec in field_lookup.items() if spec[3] == "scalar"]
     requested_fields.extend(scalar_fields)
     return requested_fields
