@@ -708,6 +708,8 @@ def compute_and_store_full_field_pdfs(
             )
         pdf_result["source_field_mean"] = float(global_stats["global_mean"])
         pdf_result["source_field_std"] = float(global_stats["global_std"])
+        pdf_result["source_field_min"] = float(global_stats["global_min"])
+        pdf_result["source_field_max"] = float(global_stats["global_max"])
         pdf_result["source_file"] = os.path.abspath(prepared_path)
         pdf_result["source_h5"] = os.path.abspath(prepared_path)
         pdf_result["step"] = str(meta["step"])

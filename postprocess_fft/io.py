@@ -218,6 +218,7 @@ def save_spectra(
     sound_speed_stats=None,
     mach_number_stats=None,
     turbulent_mach_number_stats=None,
+    turbulent_mach_fluctuation_stats=None,
 ):
     """Save integer-shell and physical-density spectra text files plus metadata."""
     stem = _spectra_output_stem(filename)
@@ -333,7 +334,12 @@ def save_spectra(
         if turbulent_mach_number_stats is not None:
             handle.write(
                 "# Turbulent Mach number: "
-                f"Mt = sqrt(2<KE>) / c_mean = {float(turbulent_mach_number_stats['global_mean']):.16e}\n"
+                f"Mt_raw = sqrt(2<KE>) / c_mean = {float(turbulent_mach_number_stats['global_mean']):.16e}\n"
+            )
+        if turbulent_mach_fluctuation_stats is not None:
+            handle.write(
+                "# Turbulent Mach number (fluctuation-based): "
+                f"Mt_fluct = u'_rms / c_mean = {float(turbulent_mach_fluctuation_stats['global_mean']):.16e}\n"
             )
         handle.write("# File convention: integer-shell spectra file\n")
         handle.write("# Spectra conventions:\n")
@@ -399,7 +405,12 @@ def save_spectra(
         if turbulent_mach_number_stats is not None:
             handle.write(
                 "# Turbulent Mach number: "
-                f"Mt = sqrt(2<KE>) / c_mean = {float(turbulent_mach_number_stats['global_mean']):.16e}\n"
+                f"Mt_raw = sqrt(2<KE>) / c_mean = {float(turbulent_mach_number_stats['global_mean']):.16e}\n"
+            )
+        if turbulent_mach_fluctuation_stats is not None:
+            handle.write(
+                "# Turbulent Mach number (fluctuation-based): "
+                f"Mt_fluct = u'_rms / c_mean = {float(turbulent_mach_fluctuation_stats['global_mean']):.16e}\n"
             )
         handle.write("# File convention: physical-wavenumber spectral-density file\n")
         handle.write("# Spectra conventions:\n")

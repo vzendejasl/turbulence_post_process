@@ -51,6 +51,8 @@ class TestFieldPdfStorage(unittest.TestCase):
             "in_range_samples": 4,
             "underflow_count": 0,
             "overflow_count": 0,
+            "source_field_min": -4.0,
+            "source_field_max": 4.0,
             "source_field_mean": 0.0,
             "source_field_std": 2.0,
             "normalization_scale": 2.0,
@@ -73,6 +75,8 @@ class TestFieldPdfStorage(unittest.TestCase):
         np.testing.assert_allclose(loaded["pdf"], pdf_result["pdf"])
         self.assertEqual(str(loaded["attrs"]["source_field"]), "div_u")
         self.assertEqual(str(loaded["attrs"]["normalization"]), "global_std")
+        self.assertEqual(float(loaded["attrs"]["source_field_min"]), -4.0)
+        self.assertEqual(float(loaded["attrs"]["source_field_max"]), 4.0)
         self.assertEqual(float(loaded["attrs"]["source_field_std"]), 2.0)
         self.assertEqual(float(loaded["attrs"]["normalization_offset"]), 0.0)
 

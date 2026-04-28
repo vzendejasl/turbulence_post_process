@@ -253,6 +253,8 @@ def field_pdf_metadata_text(pdf_result):
     lines = [
         f"PDF name: {pdf_result['pdf_name']}",
         f"Source field: {pdf_result['source_field']}",
+        f"Source field min: {float(pdf_result.get('source_field_min', 0.0)):.16e}",
+        f"Source field max: {float(pdf_result.get('source_field_max', 0.0)):.16e}",
         f"Source field mean: {float(pdf_result.get('source_field_mean', 0.0)):.16e}",
         f"Source field std: {float(pdf_result.get('source_field_std', pdf_result.get('normalization_scale', 0.0))):.16e}",
         f"Normalization: {pdf_result['normalization']}",
@@ -485,6 +487,8 @@ def print_field_pdf_summary(pdf_result, *, output_path=None):
     """Print a concise rank-0 summary for one field PDF."""
     print(f"PDF saved: {pdf_result['pdf_name']}")
     print(f"  Source field      : {pdf_result['source_field']}")
+    print(f"  Source field min  : {float(pdf_result.get('source_field_min', 0.0)):.6g}")
+    print(f"  Source field max  : {float(pdf_result.get('source_field_max', 0.0)):.6g}")
     print(f"  Source field mean : {float(pdf_result.get('source_field_mean', 0.0)):.6g}")
     print(
         "  Source field std  : "

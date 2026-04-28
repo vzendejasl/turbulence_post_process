@@ -33,6 +33,8 @@ class TestFieldPdf(unittest.TestCase):
         pdf_result = {
             "pdf_name": "normalized_density",
             "source_field": "density",
+            "source_field_min": -0.5,
+            "source_field_max": 3.25,
             "source_field_mean": 0.00125,
             "source_field_std": 1.75,
             "normalization": "global_std",
@@ -53,6 +55,8 @@ class TestFieldPdf(unittest.TestCase):
             print_field_pdf_summary(pdf_result)
         printed = stream.getvalue()
 
+        self.assertIn("Source field min  : -0.5", printed)
+        self.assertIn("Source field max  : 3.25", printed)
         self.assertIn("Source field mean : 0.00125", printed)
         self.assertIn("Source field std  : 1.75", printed)
         self.assertIn("Normalization offset: 0.00125", printed)

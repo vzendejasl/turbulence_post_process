@@ -9,6 +9,7 @@ import numpy as np
 from mpi4py import MPI
 
 from .common import global_field_stats
+from .common import global_mean
 from .common import global_mean_energy
 from .common import heffte
 from .common import zero_near_zero
@@ -166,6 +167,7 @@ def analyze_file_parallel(
     sound_speed_stats = None
     mach_number_stats = None
     turbulent_mach_number_stats = None
+    turbulent_mach_fluctuation_stats = None
     if has_thermo_inputs:
         if thermo_gamma <= 0.0:
             raise ValueError(f"Thermodynamic gamma must be positive. Received {thermo_gamma!r}.")
@@ -192,10 +194,21 @@ def analyze_file_parallel(
         local_sound_speed = np.sqrt(np.maximum(local_sound_speed_sq, 0.0))
         local_speed = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
         sound_speed_floor = np.maximum(local_sound_speed, 1.0e-30)
-        turbulent_speed_scale = float(np.sqrt(2.0 * total_ke))
         sound_speed_stats = global_field_stats(local_sound_speed, comm)
         sound_speed_mean = float(sound_speed_stats["global_mean"])
-        turbulent_mach_value = turbulent_speed_scale / max(sound_speed_mean, 1.0e-30)
+        sound_speed_mean_floor = max(sound_speed_mean, 1.0e-30)
+
+        turbulent_speed_scale = float(np.sqrt(max(2.0 * total_ke, 0.0)))
+        mean_vx = float(global_mean(local_vx, comm))
+        mean_vy = float(global_mean(local_vy, comm))
+        mean_vz = float(global_mean(local_vz, comm))
+        fluctuation_speed_scale_sq = max(
+            2.0 * total_ke - (mean_vx**2 + mean_vy**2 + mean_vz**2),
+            0.0,
+        )
+        turbulent_fluctuation_speed_scale = float(np.sqrt(fluctuation_speed_scale_sq))
+        turbulent_mach_value = turbulent_speed_scale / sound_speed_mean_floor
+        turbulent_mach_fluctuation_value = turbulent_fluctuation_speed_scale / sound_speed_mean_floor
 
         mach_number_stats = global_field_stats(local_speed / sound_speed_floor, comm)
         turbulent_mach_number_stats = {
@@ -203,6 +216,12 @@ def analyze_file_parallel(
             "global_max": float(turbulent_mach_value),
             "global_rms": float(turbulent_mach_value),
             "global_mean": float(turbulent_mach_value),
+        }
+        turbulent_mach_fluctuation_stats = {
+            "global_min": float(turbulent_mach_fluctuation_value),
+            "global_max": float(turbulent_mach_fluctuation_value),
+            "global_rms": float(turbulent_mach_fluctuation_value),
+            "global_mean": float(turbulent_mach_fluctuation_value),
         }
 
     KX, KY, KZ = local_wavenumber_mesh(shape, local_box, dx, dy, dz)
@@ -357,8 +376,12 @@ def analyze_file_parallel(
         print()
         print("  Turbulent Mach number:")
         print(
-            "    Mt = sqrt(2<KE>) / c_mean = "
+            "    Mt_raw = sqrt(2<KE>) / c_mean = "
             f"{float(turbulent_mach_number_stats['global_mean']):.8f}"
+        )
+        print(
+            "    Mt_fluct = u'_rms / c_mean = "
+            f"{float(turbulent_mach_fluctuation_stats['global_mean']):.8f}"
         )
 
     if root:
@@ -591,6 +614,7 @@ def analyze_file_parallel(
             sound_speed_stats=sound_speed_stats,
             mach_number_stats=mach_number_stats,
             turbulent_mach_number_stats=turbulent_mach_number_stats,
+            turbulent_mach_fluctuation_stats=turbulent_mach_fluctuation_stats,
         )
         save_component_spectra(
             k_centers,
@@ -681,6 +705,7 @@ def analyze_file_parallel(
             "sound_speed_stats": sound_speed_stats,
             "mach_number_stats": mach_number_stats,
             "turbulent_mach_number_stats": turbulent_mach_number_stats,
+            "turbulent_mach_fluctuation_stats": turbulent_mach_fluctuation_stats,
             "r_values": r_values,
             "S_L": structure_function_longitudinal,
             "structure_function_path": structure_function_path,

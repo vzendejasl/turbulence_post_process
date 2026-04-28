@@ -65,6 +65,12 @@ class TestSpectraMetadata(unittest.TestCase):
                 "global_rms": 0.25,
                 "global_mean": 0.25,
             }
+            turbulent_fluctuation_stats = {
+                "global_min": 0.125,
+                "global_max": 0.125,
+                "global_rms": 0.125,
+                "global_mean": 0.125,
+            }
 
             save_spectra(
                 values,
@@ -101,6 +107,7 @@ class TestSpectraMetadata(unittest.TestCase):
                 sound_speed_stats=stats,
                 mach_number_stats=stats,
                 turbulent_mach_number_stats=turbulent_stats,
+                turbulent_mach_fluctuation_stats=turbulent_fluctuation_stats,
             )
 
             metadata_path = input_path.with_name("synthetic_case_spectra_metadata.txt")
@@ -109,7 +116,14 @@ class TestSpectraMetadata(unittest.TestCase):
             self.assertIn("# Thermodynamic gamma:", metadata_text)
             self.assertIn("# Sound speed stats:", metadata_text)
             self.assertIn("# Mach number stats:", metadata_text)
-            self.assertIn("# Turbulent Mach number: Mt = sqrt(2<KE>) / c_mean = 2.5000000000000000e-01", metadata_text)
+            self.assertIn(
+                "# Turbulent Mach number: Mt_raw = sqrt(2<KE>) / c_mean = 2.5000000000000000e-01",
+                metadata_text,
+            )
+            self.assertIn(
+                "# Turbulent Mach number (fluctuation-based): Mt_fluct = u'_rms / c_mean = 1.2500000000000000e-01",
+                metadata_text,
+            )
 
 
 if __name__ == "__main__":
