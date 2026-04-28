@@ -602,9 +602,11 @@ The slice workflow now also writes one combined HDF5 file:
   data/slice_data/SampledData0_slices.h5
 
 That same file can now also store full-field PDFs under a top-level `pdfs/`
-group.  The first built-in PDF is the normalized dilatation PDF:
+group. Built-in PDFs currently include:
 
   chi = div_u / rms(div_u)
+  rho_hat = density / rms(density)
+  p_hat = pressure / rms(pressure)
 
 The PDF currently uses a variable bin range taken from the global min/max of
 the normalized field.  This is convenient for first-pass analysis, but it means
@@ -635,11 +637,32 @@ Compute and store only the full-field PDFs during the slice stage:
     --slice-pdf-only \
     --slice-pdf-bins 256
 
+PDF controls:
+  - --slice-pdf-only
+    computes/stores the full-field PDFs without rendering slice images
+  - --slice-pdf-bins <N>
+    sets the histogram bin count for the stored full-field PDFs
+  - default PDF bin count: 256
+  - yt only renders the already computed PDF curve; yt does not choose the
+    histogram bins
+  - these PDFs currently use a variable per-run GLOBAL min/max range, so they
+    are not directly comparable across runs unless rebinned/replotted onto a
+    shared fixed x-range
+
 Inspect and replot stored full-field PDFs:
 
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --list
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
     --pdf normalized_dilatation \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_density \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_pressure \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_mach_number \
     --metadata
 
 Example scalar workflow:

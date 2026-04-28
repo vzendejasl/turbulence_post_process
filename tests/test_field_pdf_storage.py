@@ -39,7 +39,7 @@ class TestFieldPdfStorage(unittest.TestCase):
         pdf_result = {
             "pdf_name": "normalized_dilatation",
             "source_field": "div_u",
-            "normalization": "global_rms",
+            "normalization": "global_std",
             "plot_title": "Normalized Dilatation PDF",
             "x_label": "x",
             "y_label": "PDF",
@@ -51,7 +51,10 @@ class TestFieldPdfStorage(unittest.TestCase):
             "in_range_samples": 4,
             "underflow_count": 0,
             "overflow_count": 0,
+            "source_field_mean": 0.0,
+            "source_field_std": 2.0,
             "normalization_scale": 2.0,
+            "normalization_offset": 0.0,
             "value_range_min": -1.0,
             "value_range_max": 1.0,
             "bin_count": 2,
@@ -69,7 +72,9 @@ class TestFieldPdfStorage(unittest.TestCase):
         np.testing.assert_allclose(loaded["bin_edges"], pdf_result["bin_edges"])
         np.testing.assert_allclose(loaded["pdf"], pdf_result["pdf"])
         self.assertEqual(str(loaded["attrs"]["source_field"]), "div_u")
-        self.assertEqual(str(loaded["attrs"]["normalization"]), "global_rms")
+        self.assertEqual(str(loaded["attrs"]["normalization"]), "global_std")
+        self.assertEqual(float(loaded["attrs"]["source_field_std"]), 2.0)
+        self.assertEqual(float(loaded["attrs"]["normalization_offset"]), 0.0)
 
 
 if __name__ == "__main__":

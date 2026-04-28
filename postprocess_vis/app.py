@@ -60,13 +60,42 @@ PLANE_AXES = {
     "z": ("y", "x"),
 }
 
-NEAR_ZERO_DILATATION_RMS_TOL = 1.0e-12
+NEAR_ZERO_PDF_STD_TOL = 1.0e-12
 
 
 def log_rank0(rank, message):
     """Print one progress message from rank 0 and flush immediately."""
     if rank == 0:
         print(message, flush=True)
+
+
+def _requested_derived_field_labels(
+    *,
+    needs_vorticity,
+    needs_divergence,
+    needs_sound_speed,
+    needs_mach_number,
+    needs_qcriterion,
+    needs_rcriterion,
+    needs_density_gradient,
+):
+    """Return user-facing labels for the derived fields requested in this run."""
+    labels = []
+    if needs_vorticity:
+        labels.append("vorticity")
+    if needs_divergence:
+        labels.append("velocity-divergence")
+    if needs_sound_speed:
+        labels.append("sound-speed")
+    if needs_mach_number:
+        labels.append("Mach-number")
+    if needs_qcriterion:
+        labels.append("Q-criterion")
+    if needs_rcriterion:
+        labels.append("R-criterion")
+    if needs_density_gradient:
+        labels.append("density-gradient magnitude")
+    return labels
 
 
 def split_axis(length, parts):
@@ -487,8 +516,24 @@ def global_mean(values, comm):
     return float(global_sum / float(global_count))
 
 
+def global_std(values, comm):
+    """Return the global population standard deviation of a distributed field."""
+    local_values = np.asarray(values, dtype=np.float64)
+    local_sum = float(np.sum(local_values, dtype=np.float64))
+    local_sum_sq = float(np.sum(local_values**2, dtype=np.float64))
+    local_count = int(local_values.size)
+    global_sum = comm.allreduce(local_sum, op=MPI.SUM)
+    global_sum_sq = comm.allreduce(local_sum_sq, op=MPI.SUM)
+    global_count = comm.allreduce(local_count, op=MPI.SUM)
+    if global_count <= 0:
+        return 0.0
+    mean = global_sum / float(global_count)
+    variance = max(global_sum_sq / float(global_count) - mean * mean, 0.0)
+    return float(np.sqrt(variance))
+
+
 def compute_global_field_stats(filepath, dataset_name, field_family, meta, comm, derived_cache=None):
-    """Return the full 3D min/max, RMS, and mean for one field."""
+    """Return the full 3D min/max, RMS, mean, and standard deviation for one field."""
     shape = meta["shape"]
     proc_grid = choose_proc_grid(shape, comm.Get_size())
     boxes = build_boxes(shape, proc_grid)
@@ -510,6 +555,7 @@ def compute_global_field_stats(filepath, dataset_name, field_family, meta, comm,
         "global_max": float(global_max),
         "global_rms": global_rms(local_values, comm),
         "global_mean": global_mean(local_values, comm),
+        "global_std": global_std(local_values, comm),
     }
 
 
@@ -519,6 +565,7 @@ def print_global_field_stats_block(title, stats):
     print(f"  min={stats['global_min']:.6g}", flush=True)
     print(f"  max={stats['global_max']:.6g}", flush=True)
     print(f"  rms={stats['global_rms']:.6g}", flush=True)
+    print(f"  std={stats['global_std']:.6g}", flush=True)
     print(f"  avg={stats['global_mean']:.6g}", flush=True)
 
 
@@ -571,14 +618,18 @@ def compute_and_store_full_field_pdfs(
         log_rank0(rank, "Skipping full-field PDF generation because slice-data output is disabled.")
         return outputs
 
+    field_lookup = available_field_specs(prepared_path)
+    proc_grid = choose_proc_grid(meta["shape"], comm.Get_size())
+    boxes = build_boxes(meta["shape"], proc_grid)
+    local_box = boxes[rank]
+
     for pdf_spec in pdf_specs:
         source_field = str(pdf_spec["source_field"])
-        if derived_cache is None or source_field not in derived_cache:
+        if source_field not in field_lookup:
             raise ValueError(
-                f"Cannot compute PDF '{pdf_spec['pdf_name']}' because derived field '{source_field}' is unavailable."
+                f"Cannot compute PDF '{pdf_spec['pdf_name']}' because field '{source_field}' is unavailable."
             )
-
-        dataset_name, field_label, latex_label, field_family = canonical_field_name(source_field)
+        dataset_name, field_label, latex_label, field_family = field_lookup[source_field]
         global_stats = stats_cache.get(dataset_name)
         if global_stats is None:
             global_stats = compute_global_field_stats(
@@ -593,27 +644,40 @@ def compute_and_store_full_field_pdfs(
 
         normalization = str(pdf_spec.get("normalization", "none")).strip().lower()
         normalization_scale = 1.0
-        if normalization == "global_rms":
+        normalization_offset = 0.0
+        if normalization == "global_std":
+            normalization_scale = float(global_stats["global_std"])
+            normalization_offset = float(global_stats["global_mean"])
+        elif normalization == "global_rms":
             normalization_scale = float(global_stats["global_rms"])
         elif normalization != "none":
             raise ValueError(
                 f"Unsupported PDF normalization '{normalization}' for '{pdf_spec['pdf_name']}'."
             )
 
-        pdf_local_values = derived_cache[source_field]
+        if source_field in DERIVED_DATASET_NAMES:
+            if derived_cache is None or source_field not in derived_cache:
+                raise ValueError(
+                    f"Cannot compute PDF '{pdf_spec['pdf_name']}' because derived field '{source_field}' is unavailable."
+                )
+            pdf_local_values = derived_cache[source_field]
+        elif dataset_name == "velocity_magnitude":
+            local_vx, local_vy, local_vz = read_structured_local_fields(prepared_path, local_box, comm)
+            pdf_local_values = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
+        else:
+            pdf_local_values = read_structured_local_dataset(prepared_path, dataset_name, local_box, comm)
         pdf_value_range = None
         near_zero_treated_as_zero = False
         if (
-            source_field == "div_u"
-            and normalization == "global_rms"
-            and normalization_scale <= NEAR_ZERO_DILATATION_RMS_TOL
+            normalization in {"global_std", "global_rms"}
+            and normalization_scale <= NEAR_ZERO_PDF_STD_TOL
         ):
             near_zero_treated_as_zero = True
-            pdf_local_values = np.zeros_like(derived_cache[source_field], dtype=np.float64)
+            pdf_local_values = np.zeros_like(pdf_local_values, dtype=np.float64)
             pdf_value_range = (-0.5, 0.5)
             log_rank0(
                 rank,
-                f"  Divergence RMS for {pdf_spec['pdf_name']} is {normalization_scale:.6g}, "
+                f"  Global std for {pdf_spec['pdf_name']} is {normalization_scale:.6g}, "
                 "so the field is being treated as numerically zero for rank-stable PDF storage.",
             )
 
@@ -623,22 +687,27 @@ def compute_and_store_full_field_pdfs(
             bins=pdf_bins,
             value_range=pdf_value_range,
             normalization_scale=(1.0 if near_zero_treated_as_zero else normalization_scale),
+            normalization_offset=(0.0 if near_zero_treated_as_zero else normalization_offset),
             pdf_name=pdf_spec["pdf_name"],
             source_field=source_field,
             normalization=normalization,
             plot_title=pdf_spec.get("plot_title", field_label),
             x_label=pdf_spec.get("x_label", latex_label),
+            raw_x_label=pdf_spec.get("raw_x_label", field_label),
             y_label=pdf_spec.get("y_label", "PDF"),
         )
         if near_zero_treated_as_zero:
             pdf_result["measured_normalization_scale"] = float(normalization_scale)
             pdf_result["normalization_scale"] = 0.0
-            pdf_result["near_zero_rms_tolerance"] = float(NEAR_ZERO_DILATATION_RMS_TOL)
+            pdf_result["normalization_offset"] = float(normalization_offset)
+            pdf_result["near_zero_std_tolerance"] = float(NEAR_ZERO_PDF_STD_TOL)
             pdf_result["near_zero_field_treated_as_zero"] = True
             pdf_result["binning_warning"] = (
-                f"div_u RMS is <= {NEAR_ZERO_DILATATION_RMS_TOL:.1e}, so the normalized dilatation PDF was stored "
+                f"{source_field} std is <= {NEAR_ZERO_PDF_STD_TOL:.1e}, so the normalized PDF was stored "
                 "as a zero-field delta approximation for rank stability."
             )
+        pdf_result["source_field_mean"] = float(global_stats["global_mean"])
+        pdf_result["source_field_std"] = float(global_stats["global_std"])
         pdf_result["source_file"] = os.path.abspath(prepared_path)
         pdf_result["source_h5"] = os.path.abspath(prepared_path)
         pdf_result["step"] = str(meta["step"])
@@ -648,7 +717,7 @@ def compute_and_store_full_field_pdfs(
         if rank == 0:
             save_pdf_serial(slice_data_path, pdf_spec["pdf_name"], pdf_result)
             output_path = field_pdf_output_path(prepared_path, pdf_spec["pdf_name"], output_format=output_format)
-            plot_field_pdf(pdf_result, output_path, plot=plot)
+            plot_field_pdf(pdf_result, output_path, plot=plot, backend="yt")
             write_field_pdf_metadata(output_path, pdf_result)
             print_field_pdf_summary(pdf_result, output_path=output_path)
             outputs.append(output_path)
@@ -984,6 +1053,7 @@ def run_visualization(
     needs_density_gradient = any(spec[3] == "density_gradient" for spec in field_specs)
     pdf_source_fields = {spec["source_field"] for spec in pdf_specs}
     needs_divergence = needs_divergence or ("div_u" in pdf_source_fields)
+    needs_mach_number = needs_mach_number or (MACH_NUMBER_FIELD_NAME in pdf_source_fields)
     derived_cache = None
     stats_cache = {}
 
@@ -1000,6 +1070,7 @@ def run_visualization(
             print(f"Rendering {len(requests)} slice(s) for {len(field_specs)} field set(s)...", flush=True)
         if save_slice_data:
             print(f"Saving reusable slice data to: {saved_slice_data_path}", flush=True)
+        print(flush=True)
 
     if save_slice_data:
         init_start = time.perf_counter()
@@ -1027,20 +1098,20 @@ def run_visualization(
         or needs_density_gradient
     ):
         derived_start = time.perf_counter()
-        if needs_vorticity:
-            log_rank0(rank, "Computing distributed vorticity field with HeFFTe inverse FFT...")
-        if needs_divergence:
-            log_rank0(rank, "Computing distributed velocity-divergence field with HeFFTe inverse FFT...")
-        if needs_sound_speed:
-            log_rank0(rank, f"Computing distributed sound-speed field with gamma={thermo_gamma:.6g}...")
-        if needs_mach_number:
-            log_rank0(rank, f"Computing distributed Mach-number field with gamma={thermo_gamma:.6g}...")
-        if needs_qcriterion:
-            log_rank0(rank, "Computing distributed Q-criterion field with HeFFTe inverse FFT...")
-        if needs_rcriterion:
-            log_rank0(rank, "Computing distributed R-criterion field with HeFFTe inverse FFT...")
-        if needs_density_gradient:
-            log_rank0(rank, "Computing distributed density-gradient magnitude field with HeFFTe inverse FFT...")
+        derived_labels = _requested_derived_field_labels(
+            needs_vorticity=needs_vorticity,
+            needs_divergence=needs_divergence,
+            needs_sound_speed=needs_sound_speed,
+            needs_mach_number=needs_mach_number,
+            needs_qcriterion=needs_qcriterion,
+            needs_rcriterion=needs_rcriterion,
+            needs_density_gradient=needs_density_gradient,
+        )
+        log_rank0(rank, "Derived-field stage:")
+        log_rank0(rank, f"  Requested fields: {', '.join(derived_labels)}")
+        if needs_sound_speed or needs_mach_number:
+            log_rank0(rank, f"  Thermodynamic gamma: {thermo_gamma:.6g}")
+        log_rank0(rank, "  Computing distributed derived fields...")
         derived_cache = compute_local_derived_fields(
             prepared_path,
             meta,
@@ -1066,20 +1137,8 @@ def run_visualization(
             thermo_gamma=thermo_gamma,
         )
         comm.Barrier()
-        if needs_vorticity:
-            log_rank0(rank, f"Completed distributed vorticity field in {time.perf_counter() - derived_start:.2f}s")
-        if needs_divergence:
-            log_rank0(rank, f"Completed distributed velocity-divergence field in {time.perf_counter() - derived_start:.2f}s")
-        if needs_sound_speed:
-            log_rank0(rank, f"Completed distributed sound-speed field in {time.perf_counter() - derived_start:.2f}s")
-        if needs_mach_number:
-            log_rank0(rank, f"Completed distributed Mach-number field in {time.perf_counter() - derived_start:.2f}s")
-        if needs_qcriterion:
-            log_rank0(rank, f"Completed distributed Q-criterion field in {time.perf_counter() - derived_start:.2f}s")
-        if needs_rcriterion:
-            log_rank0(rank, f"Completed distributed R-criterion field in {time.perf_counter() - derived_start:.2f}s")
-        if needs_density_gradient:
-            log_rank0(rank, f"Completed distributed density-gradient field in {time.perf_counter() - derived_start:.2f}s")
+        log_rank0(rank, f"  Completed in {time.perf_counter() - derived_start:.2f}s")
+        log_rank0(rank, "")
 
     outputs = compute_and_store_full_field_pdfs(
         prepared_path,
