@@ -214,7 +214,7 @@ def write_field_pdf_metadata(output_path, pdf_result):
     return metadata_path
 
 
-def _rescale_pdf_result_for_plot(pdf_result, x_normalization="stored"):
+def rescale_field_pdf_for_plot(pdf_result, x_normalization="stored"):
     """Return a plotting copy of one stored PDF result with optional x-axis rescaling."""
     resolved = str(x_normalization or "stored").strip().lower()
     if resolved not in {"stored", "raw"}:
@@ -251,7 +251,7 @@ def plot_field_pdf(pdf_result, output_path, *, plot=False, y_scale="linear", x_n
     """Plot one stored field PDF to disk."""
     import matplotlib.pyplot as plt
 
-    plotted = _rescale_pdf_result_for_plot(pdf_result, x_normalization=x_normalization)
+    plotted = rescale_field_pdf_for_plot(pdf_result, x_normalization=x_normalization)
     centers = np.asarray(plotted["bin_centers"], dtype=np.float64)
     pdf = np.asarray(plotted["pdf"], dtype=np.float64)
     resolved_y_scale = str(y_scale or "linear").strip().lower()

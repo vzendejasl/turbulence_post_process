@@ -57,6 +57,9 @@ Example commands:
 
   Compare all saved slices with fixed contour values and a custom zoom window:
     python tools/replot_slice_data.py data/run1/SampledData0_slices.h5 data/run2/SampledData0_slices.h5 --field 1 --contour-values 0.5,1.0,2.0,4.0 --zoom-window 0.0,0.5
+
+  Short aliases:
+    python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 --field 4 --slice 1 --norm global_rms
 """
 
 from __future__ import annotations
@@ -1761,13 +1764,14 @@ def main():
     parser.add_argument("--width", type=float, default=None, help="Optional square plot width in domain units")
     parser.add_argument("--vmin", type=float, default=None, help="Optional lower colorbar limit")
     parser.add_argument("--vmax", type=float, default=None, help="Optional upper colorbar limit")
-    parser.add_argument("--output", default=None, help="Optional output image path")
-    parser.add_argument("--format", default="pdf", choices=["png", "pdf"], help="Default output format when --output is omitted.")
+    parser.add_argument("--output", "--out", dest="output", default=None, help="Optional output image path")
+    parser.add_argument("--format", "--fmt", dest="format", default="pdf", choices=["png", "pdf"], help="Default output format when --output is omitted.")
     parser.add_argument("--plot", action="store_true", help="Also display the plot after saving")
     parser.add_argument("--dpi", type=int, default=600, help="Raster save DPI. Default is 600.")
     parser.add_argument("--figsize", type=float, default=8.0, help="Square figure size in inches. Default is 8.0.")
     parser.add_argument(
         "--value-normalization",
+        "--norm",
         default="saved",
         choices=["saved", "none", "global_rms"],
         help="Saved-value normalization to display on replot: 'saved' preserves the slice file's stored normalization, 'none' shows raw values, and 'global_rms' applies the stored full-volume RMS when available.",
