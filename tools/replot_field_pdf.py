@@ -19,6 +19,21 @@ Examples:
     python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
       --pdf normalized_dilatation \
       --x-normalization raw
+
+  Restrict the x-axis range to [-20, 20]:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+      --pdf normalized_dilatation \
+      --x-range -20 20
+
+  Export PDF data to CSV:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+      --pdf normalized_dilatation \
+      --export-csv dilatation_pdf.csv
+
+  Save to a custom output path:
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+      --pdf normalized_dilatation \
+      --output my_plot.pdf
 """
 
 from __future__ import annotations
@@ -33,6 +48,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from postprocess_vis.pdfs import export_field_pdf_csv
+from postprocess_vis.pdfs import FIELD_PDF_REGISTRY
 from postprocess_vis.pdfs import field_pdf_output_path
 from postprocess_vis.pdfs import field_pdf_metadata_text
 from postprocess_vis.pdfs import plot_field_pdf
@@ -95,6 +111,14 @@ def main():
         choices=["stored", "raw"],
         help="How to plot the x-axis. 'stored' uses the saved PDF variable, 'raw' rescales back to the original field units when the stored normalization scale is available.",
     )
+    parser.add_argument(
+        "--x-range",
+        type=float,
+        nargs=2,
+        metavar=("MIN", "MAX"),
+        default=None,
+        help="Optional x-axis display range, e.g. --x-range -20 20.",
+    )
     args = parser.parse_args()
 
     if args.list or args.pdf is None:
@@ -109,6 +133,13 @@ def main():
     pdf_result["counts"] = loaded["counts"]
     pdf_result["pdf"] = loaded["pdf"]
 
+    # Override stored labels with current registry values so old HDF5 files
+    # pick up label changes without needing to be recomputed.
+    if args.pdf in FIELD_PDF_REGISTRY:
+        for key in ("x_label", "y_label", "plot_title"):
+            if key in FIELD_PDF_REGISTRY[args.pdf]:
+                pdf_result[key] = FIELD_PDF_REGISTRY[args.pdf][key]
+
     if args.metadata:
         print(field_pdf_metadata_text(pdf_result), end="")
 
@@ -119,12 +150,16 @@ def main():
     output_anchor = str(pdf_result.get("source_h5", args.slice_file))
     output_path = args.output or field_pdf_output_path(output_anchor, args.pdf, output_format=args.format)
     plotted_pdf_result = rescale_field_pdf_for_plot(pdf_result, x_normalization=args.x_normalization)
+    if args.y_scale != "linear" and not args.output:
+        stem, ext = os.path.splitext(output_path)
+        output_path = f"{stem}_{args.y_scale}_scale{ext}"
     plot_field_pdf(
         pdf_result,
         output_path,
         plot=args.plot,
         y_scale=args.y_scale,
         x_normalization=args.x_normalization,
+        x_range=args.x_range,
     )
     print(
         "X range for plot: "

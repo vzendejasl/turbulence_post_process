@@ -83,7 +83,11 @@ Examples:
         "--slice-field",
         action="append",
         default=[],
-        help="Field for slice plots. Repeat to render multiple fields. Density-gradient magnitude is auto-appended when a density field exists.",
+        help=(
+            "Field for slice plots. Repeat to render multiple fields. "
+            "Density-gradient magnitude is auto-appended when a density field exists, "
+            "and Mach number is included by default when both density and pressure exist."
+        ),
     )
     parser.add_argument(
         "--scalar-file",
