@@ -1721,7 +1721,6 @@ export CCE_LIBDIR=/opt/cray/pe/lib64/cce
 export PYTHONPATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
 export LD_LIBRARY_PATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib64:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib:${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LD_LIBRARY_PATH:-}
 export OMP_NUM_THREADS=1
-<<<<<<< HEAD
 
 # I kept getting errors with the above bash script set up. This worked for me.
 
@@ -1744,5 +1743,3 @@ export CCE_LIBDIR=/opt/cray/pe/lib64/cce
 export PYTHONPATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib64:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib:${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LD_LIBRARY_PATH:-}
 export OMP_NUM_THREADS=1
-=======
->>>>>>> a53ad85c603045a9fca7c8e26ed38f6948ae617d
