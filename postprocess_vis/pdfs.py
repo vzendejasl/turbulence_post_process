@@ -240,7 +240,8 @@ def rescale_field_pdf_for_plot(pdf_result, x_normalization="stored"):
     result["pdf"] = result["pdf"] / abs(scale)
     result["value_range_min"] = float(result["bin_edges"][0])
     result["value_range_max"] = float(result["bin_edges"][-1])
-    result["x_label"] = r"$\theta$"
+    source_field = str(pdf_result.get("source_field", "field"))
+    result["x_label"] = source_field
     result["plot_title"] = f"{pdf_result.get('plot_title', 'Field PDF')} [raw units]"
     result["x_normalization"] = "raw"
     return result
