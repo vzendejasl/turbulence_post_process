@@ -1734,3 +1734,25 @@ export CCE_LIBDIR=/opt/cray/pe/lib64/cce
 export PYTHONPATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
 export LD_LIBRARY_PATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib64:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib:${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LD_LIBRARY_PATH:-}
 export OMP_NUM_THREADS=1
+
+# I kept getting errors with the above bash script set up. This worked for me.
+
+#!/bin/bash
+module --force purge
+module load PrgEnv-gnu/8.7.0
+module load gcc/12.2.0
+module load cmake/3.29.2
+module load craype-x86-trento
+module load cray-fftw/3.3.10.11
+
+source /collab/usr/gapps/python/toss_4_x86_64_ib/anaconda3-2023.03/etc/profile.d/conda.sh
+conda activate /usr/workspace/zendejas/turbulence_post_process/.conda/envs/heffte-py-rzadams
+
+export HDF5_MPI=ON
+export HDF5_DIR=/opt/cray/pe/hdf5-parallel/1.14.3.7/cray/20.0
+export PMI_LIBDIR=/opt/cray/pe/lib64
+export CCE_LIBDIR=/opt/cray/pe/lib64/cce
+
+export PYTHONPATH=/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/share/heffte/python:${PYTHONPATH:-}
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib64:/usr/workspace/zendejas/turbulence_post_process/third_party/heffte/install/lib:${CCE_LIBDIR}:${PMI_LIBDIR}:${HDF5_DIR}/lib:${LD_LIBRARY_PATH:-}
+export OMP_NUM_THREADS=1
