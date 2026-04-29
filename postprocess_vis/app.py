@@ -10,6 +10,7 @@ import h5py
 import numpy as np
 from mpi4py import MPI
 
+from postprocess_fft.analysis_context import DistributedAnalysisContext
 from postprocess_fft.io import read_structured_local_fields
 from postprocess_fft.layout import box_shape
 from postprocess_fft.layout import box_slices
@@ -38,7 +39,9 @@ from postprocess_vis.pdfs import compute_distributed_field_pdf
 from postprocess_vis.pdfs import default_field_pdf_specs
 from postprocess_vis.pdfs import field_pdf_output_path
 from postprocess_vis.pdfs import plot_field_pdf
+from postprocess_vis.pdfs import plot_smoothed_field_pdf
 from postprocess_vis.pdfs import print_field_pdf_summary
+from postprocess_vis.pdfs import smooth_field_pdf_for_plot
 from postprocess_vis.pdfs import write_field_pdf_metadata
 from postprocess_vis.slice_data import default_slice_data_output
 from postprocess_vis.slice_data import initialize_slice_data_file
@@ -78,6 +81,7 @@ def _requested_derived_field_labels(
     needs_qcriterion,
     needs_rcriterion,
     needs_density_gradient,
+    needs_velocity_gradient_u12,
 ):
     """Return user-facing labels for the derived fields requested in this run."""
     labels = []
@@ -95,6 +99,8 @@ def _requested_derived_field_labels(
         labels.append("R-criterion")
     if needs_density_gradient:
         labels.append("density-gradient magnitude")
+    if needs_velocity_gradient_u12:
+        labels.append("velocity-gradient u_{1,2}")
     return labels
 
 
@@ -369,125 +375,65 @@ def compute_local_derived_fields(
     include_sound_speed=False,
     include_mach_number=False,
     include_density_gradient=False,
+    include_velocity_gradient_u12=False,
     density_dataset_name=None,
     pressure_dataset_name=None,
     thermo_gamma=1.4,
+    analysis_context=None,
 ):
     """Compute distributed real-space derived velocity fields with HeFFTe."""
-    shape = meta["shape"]
-    proc_grid = choose_proc_grid(shape, comm.Get_size())
-    boxes = build_boxes(shape, proc_grid)
-    local_box = boxes[comm.Get_rank()]
-    local_shape = box_shape(local_box)
-
-    backend = get_backend(backend_name)
-    plan = heffte.fft3d(backend, local_box, local_box, comm)
-    KX, KY, KZ = local_wavenumber_mesh(shape, local_box, meta["dx"], meta["dy"], meta["dz"])
+    if analysis_context is None:
+        analysis_context = DistributedAnalysisContext.from_structured_h5(filepath, meta, comm, backend_name)
 
     derived_fields = {
-        "local_box": local_box,
+        "local_box": analysis_context.local_box,
     }
 
-    global_points = int(np.prod(shape))
-    needs_velocity_fields = (
-        include_vorticity
-        or include_divergence
-        or include_qcriterion
-        or include_rcriterion
-        or include_mach_number
-    )
     needs_thermo_fields = include_sound_speed or include_mach_number
 
-    local_vx = local_vy = local_vz = None
-    vx_k = vy_k = vz_k = None
-    if needs_velocity_fields:
-        local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
-        vx_k = forward_field(plan, local_vx).reshape(local_shape, order="C")
-        vy_k = forward_field(plan, local_vy).reshape(local_shape, order="C")
-        vz_k = forward_field(plan, local_vz).reshape(local_shape, order="C")
-
     if include_vorticity:
-        omega_x_k = 1j * (KY * vz_k - KZ * vy_k)
-        omega_y_k = 1j * (KZ * vx_k - KX * vz_k)
-        omega_z_k = 1j * (KX * vy_k - KY * vx_k)
-
-        omega_x = backward_field(plan, omega_x_k, local_shape)
-        omega_y = backward_field(plan, omega_y_k, local_shape)
-        omega_z = backward_field(plan, omega_z_k, local_shape)
-
+        omega_x, omega_y, omega_z = analysis_context.get_vorticity_components()
         derived_fields["omega_x"] = omega_x
         derived_fields["omega_y"] = omega_y
         derived_fields["omega_z"] = omega_z
-        derived_fields["vorticity_magnitude"] = np.sqrt(omega_x**2 + omega_y**2 + omega_z**2)
+        derived_fields["vorticity_magnitude"] = analysis_context.get_vorticity_magnitude()
 
     if include_divergence or include_qcriterion or include_rcriterion:
-        dux_dx = backward_field(plan, 1j * KX * vx_k, local_shape)
-        dux_dy = backward_field(plan, 1j * KY * vx_k, local_shape)
-        dux_dz = backward_field(plan, 1j * KZ * vx_k, local_shape)
-        duy_dx = backward_field(plan, 1j * KX * vy_k, local_shape)
-        duy_dy = backward_field(plan, 1j * KY * vy_k, local_shape)
-        duy_dz = backward_field(plan, 1j * KZ * vy_k, local_shape)
-        duz_dx = backward_field(plan, 1j * KX * vz_k, local_shape)
-        duz_dy = backward_field(plan, 1j * KY * vz_k, local_shape)
-        duz_dz = backward_field(plan, 1j * KZ * vz_k, local_shape)
-
-        div_u = dux_dx + duy_dy + duz_dz
+        div_u = analysis_context.get_divergence()
         if include_divergence:
             derived_fields["div_u"] = div_u
-        trace_grad_u_sq = (
-            dux_dx * dux_dx + dux_dy * duy_dx + dux_dz * duz_dx
-            + duy_dx * dux_dy + duy_dy * duy_dy + duy_dz * duz_dy
-            + duz_dx * dux_dz + duz_dy * duy_dz + duz_dz * duz_dz
-        )
         if include_qcriterion:
-            derived_fields["q_criterion"] = 0.5 * (div_u**2 - trace_grad_u_sq)
+            derived_fields["q_criterion"] = analysis_context.get_qcriterion()
 
         if include_rcriterion:
-            # Full compressible third invariant using the same sign convention
-            # as the current Q definition: P = -tr(grad_u), Q = I2, R = -I3.
-            det_grad_u = (
-                dux_dx * (duy_dy * duz_dz - duy_dz * duz_dy)
-                - dux_dy * (duy_dx * duz_dz - duy_dz * duz_dx)
-                + dux_dz * (duy_dx * duz_dy - duy_dy * duz_dx)
-            )
-            derived_fields["r_criterion"] = -det_grad_u
+            derived_fields["r_criterion"] = analysis_context.get_rcriterion()
 
     if include_density_gradient:
         if not density_dataset_name:
             raise ValueError("A density dataset name is required to compute the density-gradient magnitude.")
-        local_density = read_structured_local_dataset(filepath, density_dataset_name, local_box, comm)
-        density_k = forward_field(plan, local_density).reshape(local_shape, order="C")
-        drho_dx = backward_field(plan, 1j * KX * density_k, local_shape)
-        drho_dy = backward_field(plan, 1j * KY * density_k, local_shape)
-        drho_dz = backward_field(plan, 1j * KZ * density_k, local_shape)
-        derived_fields["density_gradient_magnitude"] = np.sqrt(drho_dx**2 + drho_dy**2 + drho_dz**2)
+        derived_fields["density_gradient_magnitude"] = analysis_context.get_density_gradient_magnitude(
+            density_dataset_name
+        )
+
+    if include_velocity_gradient_u12:
+        derived_fields["dux_dy"] = analysis_context.get_velocity_gradients()["dux_dy"]
 
     if needs_thermo_fields:
         if not density_dataset_name or not pressure_dataset_name:
             raise ValueError("Density and pressure dataset names are required to compute thermodynamic derived fields.")
-        local_density = read_structured_local_dataset(filepath, density_dataset_name, local_box, comm)
-        local_pressure = read_structured_local_dataset(filepath, pressure_dataset_name, local_box, comm)
-        invalid_density_count = comm.allreduce(int(np.count_nonzero(local_density <= 0.0)), op=MPI.SUM)
-        if invalid_density_count:
-            raise ValueError(
-                f"Cannot compute sound-speed and Mach fields: found {invalid_density_count} non-positive density value(s)."
-            )
-        local_sound_speed_sq = thermo_gamma * local_pressure / local_density
-        invalid_sound_speed_sq_count = comm.allreduce(int(np.count_nonzero(local_sound_speed_sq < 0.0)), op=MPI.SUM)
-        if invalid_sound_speed_sq_count:
-            raise ValueError(
-                f"Cannot compute sound-speed and Mach fields: found {invalid_sound_speed_sq_count} negative gamma*p/rho value(s)."
-            )
-        local_sound_speed = np.sqrt(np.maximum(local_sound_speed_sq, 0.0))
+        local_sound_speed = analysis_context.get_sound_speed(
+            density_dataset_name,
+            pressure_dataset_name,
+            thermo_gamma,
+        )
         derived_fields[SOUND_SPEED_FIELD_NAME] = local_sound_speed
 
         if include_mach_number:
-            if local_vx is None or local_vy is None or local_vz is None:
-                local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
-            local_speed = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
-            sound_speed_floor = np.maximum(local_sound_speed, 1.0e-30)
-            if include_mach_number:
-                derived_fields[MACH_NUMBER_FIELD_NAME] = local_speed / sound_speed_floor
+            derived_fields[MACH_NUMBER_FIELD_NAME] = analysis_context.get_mach_number(
+                density_dataset_name,
+                pressure_dataset_name,
+                thermo_gamma,
+            )
 
     return derived_fields
 
@@ -532,22 +478,34 @@ def global_std(values, comm):
     return float(np.sqrt(variance))
 
 
-def compute_global_field_stats(filepath, dataset_name, field_family, meta, comm, derived_cache=None):
+def compute_global_field_stats(filepath, dataset_name, field_family, meta, comm, derived_cache=None, analysis_context=None):
     """Return the full 3D min/max, RMS, mean, and standard deviation for one field."""
-    shape = meta["shape"]
-    proc_grid = choose_proc_grid(shape, comm.Get_size())
-    boxes = build_boxes(shape, proc_grid)
-    local_box = boxes[comm.Get_rank()]
-
-    if dataset_name == "velocity_magnitude":
-        local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
-        local_values = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
+    if analysis_context is not None and dataset_name == "velocity_magnitude":
+        local_values = np.sqrt(
+            analysis_context.local_vx**2 + analysis_context.local_vy**2 + analysis_context.local_vz**2
+        )
+    elif analysis_context is not None and dataset_name == "vx":
+        local_values = np.asarray(analysis_context.local_vx, dtype=np.float64)
+    elif analysis_context is not None and dataset_name == "vy":
+        local_values = np.asarray(analysis_context.local_vy, dtype=np.float64)
+    elif analysis_context is not None and dataset_name == "vz":
+        local_values = np.asarray(analysis_context.local_vz, dtype=np.float64)
     elif dataset_name in DERIVED_DATASET_NAMES:
         if derived_cache is None or dataset_name not in derived_cache:
             raise ValueError(f"Derived cache is missing required field '{dataset_name}'.")
         local_values = np.asarray(derived_cache[dataset_name], dtype=np.float64)
+    elif analysis_context is not None:
+        local_values = np.asarray(analysis_context.get_local_dataset(dataset_name), dtype=np.float64)
     else:
-        local_values = read_structured_local_dataset(filepath, dataset_name, local_box, comm)
+        shape = meta["shape"]
+        proc_grid = choose_proc_grid(shape, comm.Get_size())
+        boxes = build_boxes(shape, proc_grid)
+        local_box = boxes[comm.Get_rank()]
+        if dataset_name == "velocity_magnitude":
+            local_vx, local_vy, local_vz = read_structured_local_fields(filepath, local_box, comm)
+            local_values = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
+        else:
+            local_values = read_structured_local_dataset(filepath, dataset_name, local_box, comm)
 
     global_min, global_max = global_range(local_values, comm)
     return {
@@ -607,6 +565,7 @@ def compute_and_store_full_field_pdfs(
     output_format,
     plot,
     pdf_bins,
+    analysis_context=None,
 ):
     """Compute configured full-field PDFs, store them in HDF5, and plot them on rank 0."""
     rank = comm.Get_rank()
@@ -619,9 +578,12 @@ def compute_and_store_full_field_pdfs(
         return outputs
 
     field_lookup = available_field_specs(prepared_path)
-    proc_grid = choose_proc_grid(meta["shape"], comm.Get_size())
-    boxes = build_boxes(meta["shape"], proc_grid)
-    local_box = boxes[rank]
+    if analysis_context is not None:
+        local_box = analysis_context.local_box
+    else:
+        proc_grid = choose_proc_grid(meta["shape"], comm.Get_size())
+        boxes = build_boxes(meta["shape"], proc_grid)
+        local_box = boxes[rank]
 
     for pdf_spec in pdf_specs:
         source_field = str(pdf_spec["source_field"])
@@ -639,17 +601,76 @@ def compute_and_store_full_field_pdfs(
                 meta,
                 comm,
                 derived_cache=derived_cache,
+                analysis_context=analysis_context,
             )
             stats_cache[dataset_name] = global_stats
 
         normalization = str(pdf_spec.get("normalization", "none")).strip().lower()
         normalization_scale = 1.0
         normalization_offset = 0.0
+        normalization_reference_field = ""
+        normalization_reference_label = ""
+        normalization_reference_std = None
+        normalization_reference_rms = None
+        normalization_scale_field_name = source_field
         if normalization == "global_std":
             normalization_scale = float(global_stats["global_std"])
             normalization_offset = float(global_stats["global_mean"])
         elif normalization == "global_rms":
             normalization_scale = float(global_stats["global_rms"])
+        elif normalization == "reference_global_rms":
+            reference_field = str(pdf_spec.get("normalization_reference_field", "vorticity_magnitude"))
+            if reference_field not in field_lookup:
+                raise ValueError(
+                    f"Cannot compute PDF '{pdf_spec['pdf_name']}' because normalization reference field "
+                    f"'{reference_field}' is unavailable."
+                )
+            reference_dataset_name, _, reference_latex_label, reference_field_family = field_lookup[reference_field]
+            reference_stats = stats_cache.get(reference_dataset_name)
+            if reference_stats is None:
+                reference_stats = compute_global_field_stats(
+                    prepared_path,
+                    reference_dataset_name,
+                    reference_field_family,
+                    meta,
+                    comm,
+                    derived_cache=derived_cache,
+                    analysis_context=analysis_context,
+                )
+                stats_cache[reference_dataset_name] = reference_stats
+            normalization_scale = float(reference_stats["global_rms"])
+            normalization_reference_field = reference_field
+            normalization_reference_label = reference_latex_label
+            normalization_reference_std = float(reference_stats["global_std"])
+            normalization_reference_rms = float(reference_stats["global_rms"])
+            normalization_scale_field_name = reference_field
+        elif normalization == "source_mean_vorticity_std":
+            reference_field = str(pdf_spec.get("normalization_reference_field", "vorticity_magnitude"))
+            if reference_field not in field_lookup:
+                raise ValueError(
+                    f"Cannot compute PDF '{pdf_spec['pdf_name']}' because normalization reference field "
+                    f"'{reference_field}' is unavailable."
+                )
+            reference_dataset_name, _, reference_latex_label, reference_field_family = field_lookup[reference_field]
+            reference_stats = stats_cache.get(reference_dataset_name)
+            if reference_stats is None:
+                reference_stats = compute_global_field_stats(
+                    prepared_path,
+                    reference_dataset_name,
+                    reference_field_family,
+                    meta,
+                    comm,
+                    derived_cache=derived_cache,
+                    analysis_context=analysis_context,
+                )
+                stats_cache[reference_dataset_name] = reference_stats
+            normalization_scale = float(reference_stats["global_std"])
+            normalization_offset = float(global_stats["global_mean"])
+            normalization_reference_field = reference_field
+            normalization_reference_label = reference_latex_label
+            normalization_reference_std = float(reference_stats["global_std"])
+            normalization_reference_rms = float(reference_stats["global_rms"])
+            normalization_scale_field_name = reference_field
         elif normalization != "none":
             raise ValueError(
                 f"Unsupported PDF normalization '{normalization}' for '{pdf_spec['pdf_name']}'."
@@ -661,15 +682,32 @@ def compute_and_store_full_field_pdfs(
                     f"Cannot compute PDF '{pdf_spec['pdf_name']}' because derived field '{source_field}' is unavailable."
                 )
             pdf_local_values = derived_cache[source_field]
+        elif analysis_context is not None and dataset_name == "velocity_magnitude":
+            pdf_local_values = np.sqrt(
+                analysis_context.local_vx**2 + analysis_context.local_vy**2 + analysis_context.local_vz**2
+            )
+        elif analysis_context is not None and dataset_name == "vx":
+            pdf_local_values = analysis_context.local_vx
+        elif analysis_context is not None and dataset_name == "vy":
+            pdf_local_values = analysis_context.local_vy
+        elif analysis_context is not None and dataset_name == "vz":
+            pdf_local_values = analysis_context.local_vz
         elif dataset_name == "velocity_magnitude":
             local_vx, local_vy, local_vz = read_structured_local_fields(prepared_path, local_box, comm)
             pdf_local_values = np.sqrt(local_vx**2 + local_vy**2 + local_vz**2)
+        elif analysis_context is not None:
+            pdf_local_values = analysis_context.get_local_dataset(dataset_name)
         else:
             pdf_local_values = read_structured_local_dataset(prepared_path, dataset_name, local_box, comm)
         pdf_value_range = None
         near_zero_treated_as_zero = False
         if (
-            normalization in {"global_std", "global_rms"}
+            normalization in {
+                "global_std",
+                "global_rms",
+                "reference_global_rms",
+                "source_mean_vorticity_std",
+            }
             and normalization_scale <= NEAR_ZERO_PDF_STD_TOL
         ):
             near_zero_treated_as_zero = True
@@ -677,7 +715,8 @@ def compute_and_store_full_field_pdfs(
             pdf_value_range = (-0.5, 0.5)
             log_rank0(
                 rank,
-                f"  Global std for {pdf_spec['pdf_name']} is {normalization_scale:.6g}, "
+                f"  Normalization scale for {pdf_spec['pdf_name']} from {normalization_scale_field_name} is "
+                f"{normalization_scale:.6g}, "
                 "so the field is being treated as numerically zero for rank-stable PDF storage.",
             )
 
@@ -703,13 +742,22 @@ def compute_and_store_full_field_pdfs(
             pdf_result["near_zero_std_tolerance"] = float(NEAR_ZERO_PDF_STD_TOL)
             pdf_result["near_zero_field_treated_as_zero"] = True
             pdf_result["binning_warning"] = (
-                f"{source_field} std is <= {NEAR_ZERO_PDF_STD_TOL:.1e}, so the normalized PDF was stored "
+                f"{normalization_scale_field_name} normalization scale is <= {NEAR_ZERO_PDF_STD_TOL:.1e}, so the normalized PDF was stored "
                 "as a zero-field delta approximation for rank stability."
             )
         pdf_result["source_field_mean"] = float(global_stats["global_mean"])
         pdf_result["source_field_std"] = float(global_stats["global_std"])
+        pdf_result["source_field_rms"] = float(global_stats["global_rms"])
         pdf_result["source_field_min"] = float(global_stats["global_min"])
         pdf_result["source_field_max"] = float(global_stats["global_max"])
+        if normalization_reference_field:
+            pdf_result["normalization_reference_field"] = normalization_reference_field
+        if normalization_reference_label:
+            pdf_result["normalization_reference_label"] = normalization_reference_label
+        if normalization_reference_std is not None:
+            pdf_result["normalization_reference_std"] = float(normalization_reference_std)
+        if normalization_reference_rms is not None:
+            pdf_result["normalization_reference_rms"] = float(normalization_reference_rms)
         pdf_result["source_file"] = os.path.abspath(prepared_path)
         pdf_result["source_h5"] = os.path.abspath(prepared_path)
         pdf_result["step"] = str(meta["step"])
@@ -719,10 +767,23 @@ def compute_and_store_full_field_pdfs(
         if rank == 0:
             save_pdf_serial(slice_data_path, pdf_spec["pdf_name"], pdf_result)
             output_path = field_pdf_output_path(prepared_path, pdf_spec["pdf_name"], output_format=output_format)
+            smooth_output_path = field_pdf_output_path(
+                prepared_path,
+                pdf_spec["pdf_name"],
+                output_format=output_format,
+                subdirectory="pdf_smooth",
+            )
             plot_field_pdf(pdf_result, output_path, plot=plot, backend="yt")
+            plot_smoothed_field_pdf(pdf_result, smooth_output_path, plot=plot, backend="yt")
             write_field_pdf_metadata(output_path, pdf_result)
+            write_field_pdf_metadata(
+                smooth_output_path,
+                smooth_field_pdf_for_plot(pdf_result),
+            )
             print_field_pdf_summary(pdf_result, output_path=output_path)
+            log_rank0(rank, f"  Smoothed plot output: {smooth_output_path}")
             outputs.append(output_path)
+            outputs.append(smooth_output_path)
         comm.Barrier()
 
     outputs = comm.bcast(outputs if rank == 0 else None, root=0)
@@ -1025,6 +1086,7 @@ def run_visualization(
     thermo_gamma=1.4,
     pdf_only=False,
     pdf_bins=DEFAULT_FIELD_PDF_BINS,
+    analysis_context=None,
 ):
     """Render one or more slice images from a structured HDF5 velocity file."""
     if comm is None:
@@ -1054,12 +1116,31 @@ def run_visualization(
     needs_sound_speed = any(spec[0] == SOUND_SPEED_FIELD_NAME for spec in field_specs)
     needs_mach_number = any(spec[0] == MACH_NUMBER_FIELD_NAME for spec in field_specs)
     needs_density_gradient = any(spec[3] == "density_gradient" for spec in field_specs)
+    needs_velocity_gradient_u12 = any(spec[3] == "velocity_gradient" for spec in field_specs)
     pdf_source_fields = {spec["source_field"] for spec in pdf_specs}
     needs_vorticity = needs_vorticity or ("vorticity_magnitude" in pdf_source_fields)
     needs_divergence = needs_divergence or ("div_u" in pdf_source_fields)
     needs_mach_number = needs_mach_number or (MACH_NUMBER_FIELD_NAME in pdf_source_fields)
+    needs_velocity_gradient_u12 = needs_velocity_gradient_u12 or ("dux_dy" in pdf_source_fields)
     derived_cache = None
     stats_cache = {}
+    if analysis_context is None and (
+        needs_vorticity
+        or needs_divergence
+        or needs_qcriterion
+        or needs_rcriterion
+        or needs_sound_speed
+        or needs_mach_number
+        or needs_density_gradient
+        or needs_velocity_gradient_u12
+        or bool(pdf_specs)
+    ):
+        analysis_context = DistributedAnalysisContext.from_structured_h5(
+            prepared_path,
+            meta,
+            comm,
+            backend_name,
+        )
 
     if rank == 0:
         print()
@@ -1100,6 +1181,7 @@ def run_visualization(
         or needs_sound_speed
         or needs_mach_number
         or needs_density_gradient
+        or needs_velocity_gradient_u12
     ):
         derived_start = time.perf_counter()
         derived_labels = _requested_derived_field_labels(
@@ -1110,6 +1192,7 @@ def run_visualization(
             needs_qcriterion=needs_qcriterion,
             needs_rcriterion=needs_rcriterion,
             needs_density_gradient=needs_density_gradient,
+            needs_velocity_gradient_u12=needs_velocity_gradient_u12,
         )
         log_rank0(rank, "Derived-field stage:")
         log_rank0(rank, f"  Requested fields: {', '.join(derived_labels)}")
@@ -1128,6 +1211,7 @@ def run_visualization(
             include_sound_speed=needs_sound_speed,
             include_mach_number=needs_mach_number,
             include_density_gradient=needs_density_gradient,
+            include_velocity_gradient_u12=needs_velocity_gradient_u12,
             density_dataset_name=(
                 DENSITY_DATASET_NAME
                 if (needs_density_gradient or needs_sound_speed or needs_mach_number)
@@ -1139,6 +1223,7 @@ def run_visualization(
                 else None
             ),
             thermo_gamma=thermo_gamma,
+            analysis_context=analysis_context,
         )
         comm.Barrier()
         log_rank0(rank, f"  Completed in {time.perf_counter() - derived_start:.2f}s")
@@ -1156,6 +1241,7 @@ def run_visualization(
         output_format=output_format,
         plot=plot,
         pdf_bins=pdf_bins,
+        analysis_context=analysis_context,
     )
     if pdf_only:
         return outputs, (saved_slice_data_path if save_slice_data else None)
@@ -1174,6 +1260,7 @@ def run_visualization(
                 meta,
                 comm,
                 derived_cache=derived_cache,
+                analysis_context=analysis_context,
             )
             stats_cache[dataset_name] = global_stats
         if rank == 0 and field_family != "thermo":
@@ -1256,6 +1343,7 @@ def run_visualization(
                             float(global_stats["global_min"]),
                             float(global_stats["global_max"]),
                             computed_rms,
+                            float(global_stats["global_std"]),
                             float(global_stats["global_mean"]),
                             value_normalization="none",
                         )
@@ -1272,6 +1360,7 @@ def run_visualization(
                             float(global_stats["global_min"]),
                             float(global_stats["global_max"]),
                             computed_rms,
+                            float(global_stats["global_std"]),
                             float(global_stats["global_mean"]),
                             value_normalization="none",
                         )

@@ -264,7 +264,7 @@ Examples:
                         print("-" * 60)
                         print("FFT / SPECTRA")
                         print("-" * 60)
-                    fft_result = analyze_file_parallel(
+                    fft_result, analysis_context = analyze_file_parallel(
                         prepared_path,
                         comm,
                         header_lines=None,
@@ -275,9 +275,12 @@ Examples:
                         structure_function_full_domain=args.structure_function_full_box,
                         qr_joint_pdf_bins=args.qr_bins,
                         thermo_gamma=args.gamma,
+                        return_analysis_context=True,
                     )
                     if rank == 0:
                         fft_results.append(fft_result)
+                else:
+                    analysis_context = None
                 comm.Barrier()
 
                 if not args.skip_slice:
@@ -304,6 +307,7 @@ Examples:
                         thermo_gamma=args.gamma,
                         pdf_only=args.slice_pdf_only,
                         pdf_bins=args.slice_pdf_bins,
+                        analysis_context=analysis_context,
                         slice_data_output=(
                             args.slice_data_output
                             if idx == 0 and write_idx == 0

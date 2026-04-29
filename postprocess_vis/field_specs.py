@@ -29,6 +29,7 @@ BUILTIN_FIELD_MAP = {
     "vx": ("vx", "vx", r"$u_1$", "velocity"),
     "vy": ("vy", "vy", r"$u_2$", "velocity"),
     "vz": ("vz", "vz", r"$u_3$", "velocity"),
+    "dux_dy": ("dux_dy", "dux_dy", r"$u_{1,2}$", "velocity_gradient"),
     "vorticity_magnitude": ("vorticity_magnitude", "vorticity_magnitude", r"$|\boldsymbol{\omega}|$", "vorticity"),
     "wx": ("omega_x", "wx", r"$\omega_1$", "vorticity"),
     "wy": ("omega_y", "wy", r"$\omega_2$", "vorticity"),
@@ -38,8 +39,17 @@ BUILTIN_FIELD_MAP = {
     "r_criterion": ("r_criterion", "r_criterion", r"$R$", "rcriterion"),
 }
 
-DERIVED_FIELD_FAMILIES = {"vorticity", "divergence", "qcriterion", "rcriterion", "density_gradient", "thermo"}
+DERIVED_FIELD_FAMILIES = {
+    "vorticity",
+    "divergence",
+    "qcriterion",
+    "rcriterion",
+    "density_gradient",
+    "thermo",
+    "velocity_gradient",
+}
 DERIVED_DATASET_NAMES = {
+    "dux_dy",
     "vorticity_magnitude",
     "omega_x",
     "omega_y",

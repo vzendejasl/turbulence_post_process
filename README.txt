@@ -638,6 +638,13 @@ Replot with RMS normalization applied from the saved metadata:
     --slice xy_center \
     --value-normalization global_rms
 
+Replot with standard-deviation normalization applied from the saved metadata:
+
+  python tools/replot_slice_data.py data/slice_data/SampledData0_slices.h5 \
+    --field velocity_magnitude \
+    --slice xy_center \
+    --value-normalization global_std
+
 Compute and store only the full-field PDFs during the slice stage:
 
   mpirun -n 4 python main.py your_velocity_data.h5 \
@@ -661,6 +668,9 @@ PDF controls:
   - --slice-pdf-bins <N>
     sets the histogram bin count for the stored full-field PDFs
   - default PDF bin count: 256
+  - each stored histogram now renders twice:
+    raw plots go to `slice_plots/pdfs/`
+    weighted-Gaussian smoothed plots go to `slice_plots/pdf_smooth/`
   - yt only renders the already computed PDF curve; yt does not choose the
     histogram bins
   - these PDFs currently use a variable per-run GLOBAL min/max range, so they
@@ -683,6 +693,15 @@ Inspect and replot stored full-field PDFs:
     --pdf normalized_u \
     --metadata
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_u12_by_vorticity_rms \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf rms_normalized_u2 \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf rms_normalized_u3 \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
     --pdf normalized_density \
     --metadata
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
@@ -691,11 +710,18 @@ Inspect and replot stored full-field PDFs:
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
     --pdf normalized_mach_number \
     --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
     --pdf normalized_dilatation \
     --y-scale log
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
     --pdf normalized_dilatation \
+    --smoothed
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_dilatation \
     --x-normalization raw
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf u12 \
+    --x-normalization reference_rms
 
 Short replot_field_pdf.py aliases:
   - `--meta` for `--metadata`
@@ -717,7 +743,7 @@ Example scalar workflow:
     --scalar-file pressure_sampled_data_uniform_interpolated_cycle_0.txt
 
 Useful controls:
-  - --value-normalization {saved,none,global_rms}
+  - --value-normalization {saved,none,global_rms,global_std}
   - --normalize
   - --vmin <value>
   - --vmax <value>
@@ -731,9 +757,15 @@ Field-PDF notes:
   - `tools/replot_field_pdf.py --y-scale log` does not change the stored PDF
     values.  It only displays the y-axis on a logarithmic scale, so the plotted
     quantity is still the same PDF density.
+  - `tools/replot_field_pdf.py --smoothed` applies a weighted Gaussian
+    smoothing pass to the stored bin masses and writes the default output under
+    `slice_plots/pdf_smooth/`.
   - `tools/replot_field_pdf.py --x-normalization raw` rescales the stored
     normalized PDF back into raw field units on the x-axis when the saved
     normalization scale is available.
+  - `tools/replot_field_pdf.py --x-normalization source_rms|source_std|reference_rms|reference_std`
+    reuses the saved field statistics to renormalize the x-axis later without
+    recomputing the histogram.
   - `tools/replot_field_pdf.py` now prints the plotted x-range after saving so
     you can verify whether you are viewing stored normalized units or raw field
     units.

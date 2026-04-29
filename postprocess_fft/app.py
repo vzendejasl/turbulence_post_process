@@ -8,6 +8,7 @@ import h5py
 import numpy as np
 from mpi4py import MPI
 
+from .analysis_context import DistributedAnalysisContext
 from .common import global_field_stats
 from .common import global_mean
 from .common import global_mean_energy
@@ -69,6 +70,8 @@ def analyze_file_parallel(
     structure_function_full_domain=True,
     qr_joint_pdf_bins=256,
     thermo_gamma=1.4,
+    analysis_context=None,
+    return_analysis_context=False,
 ):
     rank = comm.Get_rank()
     root = rank == 0
@@ -163,6 +166,21 @@ def analyze_file_parallel(
         local_vy = local_vy_flat.reshape(local_shape, order="C")
         local_vz = local_vz_flat.reshape(local_shape, order="C")
 
+    if analysis_context is None:
+        analysis_context = DistributedAnalysisContext.from_local_velocity_fields(
+            filepath=filename,
+            shape=shape,
+            dx=dx,
+            dy=dy,
+            dz=dz,
+            comm=comm,
+            backend_name=backend_name,
+            local_box=local_box,
+            local_vx=local_vx,
+            local_vy=local_vy,
+            local_vz=local_vz,
+        )
+
     total_ke = global_mean_energy(local_vx, local_vy, local_vz, global_points, comm)
     sound_speed_stats = None
     mach_number_stats = None
@@ -173,8 +191,8 @@ def analyze_file_parallel(
         if thermo_gamma <= 0.0:
             raise ValueError(f"Thermodynamic gamma must be positive. Received {thermo_gamma!r}.")
 
-        local_density = read_structured_local_dataset(filename, "density", local_box, comm)
-        local_pressure = read_structured_local_dataset(filename, "pressure", local_box, comm)
+        local_density = analysis_context.get_local_dataset("density")
+        local_pressure = analysis_context.get_local_dataset("pressure")
         invalid_density_count = comm.allreduce(int(np.count_nonzero(local_density <= 0.0)), op=MPI.SUM)
         if invalid_density_count:
             raise ValueError(
@@ -231,13 +249,12 @@ def analyze_file_parallel(
             "global_mean": float(turbulent_mach_fluctuation_value),
         }
 
-    KX, KY, KZ = local_wavenumber_mesh(shape, local_box, dx, dy, dz)
-    K_squared = KX**2 + KY**2 + KZ**2
-    nonzero_mask = K_squared > 0.0
+    KX, KY, KZ = analysis_context.get_wavenumber_mesh()
+    K_squared = analysis_context.get_k_squared()
+    nonzero_mask = analysis_context.get_nonzero_mask()
 
-    backend = get_backend(backend_name)
-    plan = heffte.fft3d(backend, local_box, local_box, comm)
-    third_order_plan = heffte.fft3d(backend, local_box, local_box, comm)
+    plan = analysis_context.plan
+    third_order_plan = analysis_context.third_order_plan
 
     if root:
         print()
@@ -277,13 +294,7 @@ def analyze_file_parallel(
         )
         if root:
             shell_r_values, shell_s3_values, shell_s3_counts = shell_result
-    vx_k = forward_field(plan, local_vx)
-    vy_k = forward_field(plan, local_vy)
-    vz_k = forward_field(plan, local_vz)
-
-    vx_k = vx_k.reshape(local_shape, order="C")
-    vy_k = vy_k.reshape(local_shape, order="C")
-    vz_k = vz_k.reshape(local_shape, order="C")
+    vx_k, vy_k, vz_k = analysis_context.get_velocity_modes()
 
     k_dot_v = KX * vx_k + KY * vy_k + KZ * vz_k
     projection = np.zeros_like(k_dot_v, dtype=np.complex128)
@@ -355,12 +366,7 @@ def analyze_file_parallel(
     Enst = None if Enst_x is None else Enst_x + Enst_y + Enst_z
     _, Hel = compute_helicity_spectrum_from_modes(vx_k, vy_k, vz_k, shape, local_box, dx, dy, dz, comm)
 
-    omega_x_k = 1j * (KY * vz_k - KZ * vy_k)
-    omega_y_k = 1j * (KZ * vx_k - KX * vz_k)
-    omega_z_k = 1j * (KX * vy_k - KY * vx_k)
-    omega_x = backward_field(plan, omega_x_k, local_shape)
-    omega_y = backward_field(plan, omega_y_k, local_shape)
-    omega_z = backward_field(plan, omega_z_k, local_shape)
+    omega_x, omega_y, omega_z = analysis_context.get_vorticity_components()
     vorticity_ke = global_mean_energy(omega_x, omega_y, omega_z, global_points, comm)
     wiwi_mean = 2.0 * vorticity_ke
     enstrophy_rel_error = abs(vorticity_ke - total_enstrophy) / max(abs(total_enstrophy), 1.0e-30)
@@ -406,15 +412,16 @@ def analyze_file_parallel(
         print("  Normalization: q_A = Q / |grad(u)|_F^2, r_A = R / |grad(u)|_F^3")
         print("  Filter: |grad(u)|_F^2 / max(|grad(u)|_F^2) >= 1e-3")
 
-    dux_dx = backward_field(plan, 1j * KX * vx_k, local_shape)
-    dux_dy = backward_field(plan, 1j * KY * vx_k, local_shape)
-    dux_dz = backward_field(plan, 1j * KZ * vx_k, local_shape)
-    duy_dx = backward_field(plan, 1j * KX * vy_k, local_shape)
-    duy_dy = backward_field(plan, 1j * KY * vy_k, local_shape)
-    duy_dz = backward_field(plan, 1j * KZ * vy_k, local_shape)
-    duz_dx = backward_field(plan, 1j * KX * vz_k, local_shape)
-    duz_dy = backward_field(plan, 1j * KY * vz_k, local_shape)
-    duz_dz = backward_field(plan, 1j * KZ * vz_k, local_shape)
+    gradients = analysis_context.get_velocity_gradients()
+    dux_dx = gradients["dux_dx"]
+    dux_dy = gradients["dux_dy"]
+    dux_dz = gradients["dux_dz"]
+    duy_dx = gradients["duy_dx"]
+    duy_dy = gradients["duy_dy"]
+    duy_dz = gradients["duy_dz"]
+    duz_dx = gradients["duz_dx"]
+    duz_dy = gradients["duz_dy"]
+    duz_dz = gradients["duz_dz"]
 
     s11 = dux_dx
     s22 = duy_dy
@@ -735,6 +742,8 @@ def analyze_file_parallel(
             "qr_joint_pdf_bins": int(qr_joint_pdf_bins),
         }
 
+    if return_analysis_context:
+        return result, analysis_context
     return result
 
 

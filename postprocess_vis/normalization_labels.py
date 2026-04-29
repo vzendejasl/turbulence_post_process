@@ -23,7 +23,7 @@ def _value_normalization_expression(value_normalization, base_expression):
     mode = str(value_normalization or "none").strip().lower()
     if mode in {"", "none"}:
         return base_expression
-    if mode == "global_rms":
+    if mode in {"global_rms", "global_std"}:
         return rf"{base_expression} / \mathrm{{std}}\left({base_expression}\right)"
     if mode == "global_max":
         return rf"{base_expression} / \max\left({base_expression}\right)"

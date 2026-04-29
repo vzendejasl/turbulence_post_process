@@ -192,6 +192,7 @@ def write_slice_stats_serial(
     global_min,
     global_max,
     global_rms,
+    global_std,
     global_mean,
     value_normalization="global_rms",
 ):
@@ -202,11 +203,13 @@ def write_slice_stats_serial(
         field_group.attrs["global_min"] = float(global_min)
         field_group.attrs["global_max"] = float(global_max)
         field_group.attrs["global_rms"] = float(global_rms)
+        field_group.attrs["global_std"] = float(global_std)
         field_group.attrs["global_mean"] = float(global_mean)
         field_group.attrs["value_normalization"] = str(value_normalization)
         slice_group.attrs["global_min"] = float(global_min)
         slice_group.attrs["global_max"] = float(global_max)
         slice_group.attrs["global_rms"] = float(global_rms)
+        slice_group.attrs["global_std"] = float(global_std)
         slice_group.attrs["global_mean"] = float(global_mean)
         slice_group.attrs["value_normalization"] = str(value_normalization)
 
@@ -271,6 +274,9 @@ def list_available_pdfs(filepath):
             summary[pdf_name] = {
                 "source_field": str(pdf_group.attrs.get("source_field", "")),
                 "normalization": str(pdf_group.attrs.get("normalization", "")),
+                "normalization_reference_field": str(
+                    pdf_group.attrs.get("normalization_reference_field", "")
+                ),
                 "bin_count": int(pdf_group.attrs.get("bin_count", 0)),
             }
         return summary

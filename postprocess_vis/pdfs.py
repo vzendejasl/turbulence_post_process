@@ -13,6 +13,8 @@ import numpy as np
 
 
 DEFAULT_FIELD_PDF_BINS = 256
+DEFAULT_FIELD_PDF_SMOOTH_SIGMA_BINS = 1.5
+DEFAULT_FIELD_PDF_SMOOTHING = "gaussian_weighted_bins"
 
 
 def _trimmed_decimal_label(value):
@@ -64,6 +66,59 @@ FIELD_PDF_REGISTRY = {
         "raw_x_label": r"$u$",
         "y_label": "PDF",
     },
+    "normalized_u12_by_vorticity_rms": {
+        "pdf_name": "normalized_u12_by_vorticity_rms",
+        "source_field": "dux_dy",
+        "source_field_family": "velocity_gradient",
+        "normalization": "reference_global_rms",
+        "normalization_reference_field": "vorticity_magnitude",
+        "plot_title": "Velocity-Gradient Component PDF Scaled by Vorticity RMS",
+        "x_label": r"$u_{1,2} / |\boldsymbol{\omega}|_{\mathrm{rms}}$",
+        "raw_x_label": r"$u_{1,2}$",
+        "y_label": "PDF",
+    },
+    "normalized_u1_by_vorticity_std": {
+        "pdf_name": "normalized_u1_by_vorticity_std",
+        "source_field": "vx",
+        "source_field_family": "velocity",
+        "normalization": "source_mean_vorticity_std",
+        "normalization_reference_field": "vorticity_magnitude",
+        "plot_title": "First Velocity-Component PDF Scaled by Vorticity Std",
+        "x_label": r"$\left(u_1 - \langle u_1 \rangle\right) / \mathrm{std}(|\boldsymbol{\omega}|)$",
+        "raw_x_label": r"$u_1$",
+        "y_label": "PDF",
+    },
+    "normalized_u2_by_vorticity_std": {
+        "pdf_name": "normalized_u2_by_vorticity_std",
+        "source_field": "vy",
+        "source_field_family": "velocity",
+        "normalization": "source_mean_vorticity_std",
+        "normalization_reference_field": "vorticity_magnitude",
+        "plot_title": "Second Velocity-Component PDF Scaled by Vorticity Std",
+        "x_label": r"$\left(u_2 - \langle u_2 \rangle\right) / \mathrm{std}(|\boldsymbol{\omega}|)$",
+        "raw_x_label": r"$u_2$",
+        "y_label": "PDF",
+    },
+    "rms_normalized_u2": {
+        "pdf_name": "rms_normalized_u2",
+        "source_field": "vy",
+        "source_field_family": "velocity",
+        "normalization": "global_rms",
+        "plot_title": "Second Velocity-Component PDF Scaled by its RMS",
+        "x_label": r"$u_2 / u_{2,\mathrm{rms}}$",
+        "raw_x_label": r"$u_2$",
+        "y_label": "PDF",
+    },
+    "rms_normalized_u3": {
+        "pdf_name": "rms_normalized_u3",
+        "source_field": "vz",
+        "source_field_family": "velocity",
+        "normalization": "global_rms",
+        "plot_title": "Third Velocity-Component PDF Scaled by its RMS",
+        "x_label": r"$u_3 / u_{3,\mathrm{rms}}$",
+        "raw_x_label": r"$u_3$",
+        "y_label": "PDF",
+    },
     "normalized_density": {
         "pdf_name": "normalized_density",
         "source_field": "density",
@@ -109,6 +164,12 @@ def default_field_pdf_specs(field_specs, force_normalized_dilatation=False):
         specs.append(dict(FIELD_PDF_REGISTRY["normalized_vorticity_magnitude"]))
     if "vx" in available_fields:
         specs.append(dict(FIELD_PDF_REGISTRY["normalized_u"]))
+    if "dux_dy" in available_fields and "vorticity_magnitude" in available_fields:
+        specs.append(dict(FIELD_PDF_REGISTRY["normalized_u12_by_vorticity_rms"]))
+    if "vy" in available_fields:
+        specs.append(dict(FIELD_PDF_REGISTRY["rms_normalized_u2"]))
+    if "vz" in available_fields:
+        specs.append(dict(FIELD_PDF_REGISTRY["rms_normalized_u3"]))
     if "density" in available_fields:
         specs.append(dict(FIELD_PDF_REGISTRY["normalized_density"]))
     if "pressure" in available_fields:
@@ -256,11 +317,11 @@ def compute_distributed_field_pdf(
     return result
 
 
-def field_pdf_output_path(source_path, pdf_name, output_format="pdf"):
+def field_pdf_output_path(source_path, pdf_name, output_format="pdf", subdirectory="pdfs"):
     """Return the default plot path for one stored field PDF."""
     source_path = os.path.abspath(source_path)
     directory = os.path.dirname(source_path)
-    output_dir = os.path.join(directory, "slice_plots", "pdfs")
+    output_dir = os.path.join(directory, "slice_plots", str(subdirectory))
     os.makedirs(output_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(source_path))[0]
     return os.path.join(output_dir, f"{pdf_name}_{base}.{output_format}")
@@ -281,6 +342,7 @@ def field_pdf_metadata_text(pdf_result):
         f"Source field max: {float(pdf_result.get('source_field_max', 0.0)):.16e}",
         f"Source field mean: {float(pdf_result.get('source_field_mean', 0.0)):.16e}",
         f"Source field std: {float(pdf_result.get('source_field_std', pdf_result.get('normalization_scale', 0.0))):.16e}",
+        f"Source field rms: {float(pdf_result.get('source_field_rms', pdf_result.get('normalization_scale', 0.0))):.16e}",
         f"Normalization: {pdf_result['normalization']}",
         f"Normalization scale: {float(pdf_result['normalization_scale']):.16e}",
         f"Normalization offset: {float(pdf_result.get('normalization_offset', 0.0)):.16e}",
@@ -305,6 +367,34 @@ def field_pdf_metadata_text(pdf_result):
         )
     if str(pdf_result.get("range_warning", "")).strip():
         lines.append(f"Range warning: {pdf_result['range_warning']}")
+    if str(pdf_result.get("normalization_reference_field", "")).strip():
+        lines.append(f"Normalization reference field: {pdf_result['normalization_reference_field']}")
+    if str(pdf_result.get("normalization_reference_label", "")).strip():
+        lines.append(f"Normalization reference label: {pdf_result['normalization_reference_label']}")
+    if "normalization_reference_std" in pdf_result:
+        lines.append(
+            f"Normalization reference std: {float(pdf_result['normalization_reference_std']):.16e}"
+        )
+    if "normalization_reference_rms" in pdf_result:
+        lines.append(
+            f"Normalization reference rms: {float(pdf_result['normalization_reference_rms']):.16e}"
+        )
+    if str(pdf_result.get("smoothing", "")).strip():
+        lines.append(f"Smoothing: {pdf_result['smoothing']}")
+    if "smoothing_kernel" in pdf_result:
+        lines.append(f"Smoothing kernel: {pdf_result['smoothing_kernel']}")
+    if "smoothing_sigma_bins" in pdf_result:
+        lines.append(
+            f"Smoothing sigma (bins): {float(pdf_result['smoothing_sigma_bins']):.16e}"
+        )
+    if "smoothing_bandwidth" in pdf_result:
+        lines.append(
+            f"Smoothing bandwidth: {float(pdf_result['smoothing_bandwidth']):.16e}"
+        )
+    if "smoothing_target_integral" in pdf_result:
+        lines.append(
+            f"Smoothing target integral: {float(pdf_result['smoothing_target_integral']):.16e}"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -316,11 +406,91 @@ def write_field_pdf_metadata(output_path, pdf_result):
     return metadata_path
 
 
+def _unwrap_math_label(label):
+    """Return one label body without a surrounding pair of math delimiters."""
+    text = str(label or "").strip()
+    if len(text) >= 2 and text.startswith("$") and text.endswith("$"):
+        return text[1:-1]
+    return text
+
+
+def _normalization_target_parameters(pdf_result, x_normalization):
+    """Return one x-axis normalization target as (scale, offset, label)."""
+    resolved = str(x_normalization or "stored").strip().lower()
+    stored_scale = float(
+        pdf_result.get("measured_normalization_scale", pdf_result.get("normalization_scale", 0.0))
+    )
+    stored_offset = float(pdf_result.get("normalization_offset", 0.0))
+    stored_mode = str(pdf_result.get("normalization", "")).strip().lower()
+    source_label = _unwrap_math_label(pdf_result.get("raw_x_label", pdf_result.get("source_field", "Value")))
+    reference_label = _unwrap_math_label(
+        pdf_result.get(
+            "normalization_reference_label",
+            pdf_result.get("normalization_reference_field", "reference"),
+        )
+    )
+
+    if resolved == "raw":
+        return 1.0, 0.0, str(pdf_result.get("raw_x_label", pdf_result.get("source_field", "Value")))
+    if resolved == "source_rms":
+        source_rms = float(pdf_result.get("source_field_rms", 0.0))
+        if (not np.isfinite(source_rms) or abs(source_rms) <= 1.0e-30) and stored_mode == "global_rms":
+            source_rms = stored_scale
+        return (
+            source_rms,
+            0.0,
+            rf"${source_label} / \mathrm{{rms}}({source_label})$",
+        )
+    if resolved == "source_std":
+        source_std = float(pdf_result.get("source_field_std", 0.0))
+        source_mean = float(pdf_result.get("source_field_mean", 0.0))
+        if (not np.isfinite(source_std) or abs(source_std) <= 1.0e-30) and stored_mode == "global_std":
+            source_std = stored_scale
+            source_mean = stored_offset
+        return (
+            source_std,
+            source_mean,
+            rf"$({source_label} - \langle {source_label} \rangle) / \mathrm{{std}}({source_label})$",
+        )
+    if resolved == "reference_rms":
+        reference_rms = float(pdf_result.get("normalization_reference_rms", 0.0))
+        if (not np.isfinite(reference_rms) or abs(reference_rms) <= 1.0e-30) and stored_mode == "reference_global_rms":
+            reference_rms = stored_scale
+        return (
+            reference_rms,
+            0.0,
+            rf"${source_label} / \mathrm{{rms}}({reference_label})$",
+        )
+    if resolved == "reference_std":
+        reference_std = float(pdf_result.get("normalization_reference_std", 0.0))
+        if (not np.isfinite(reference_std) or abs(reference_std) <= 1.0e-30) and stored_mode == "source_mean_vorticity_std":
+            reference_std = stored_scale
+        return (
+            reference_std,
+            0.0,
+            rf"${source_label} / \mathrm{{std}}({reference_label})$",
+        )
+    raise ValueError(
+        f"Unsupported x_normalization '{x_normalization}'. Use one of: "
+        "stored, raw, source_rms, source_std, reference_rms, reference_std."
+    )
+
+
 def rescale_field_pdf_for_plot(pdf_result, x_normalization="stored"):
     """Return a plotting copy of one stored PDF result with optional x-axis rescaling."""
     resolved = str(x_normalization or "stored").strip().lower()
-    if resolved not in {"stored", "raw"}:
-        raise ValueError(f"Unsupported x_normalization '{x_normalization}'. Use one of: stored, raw.")
+    if resolved not in {
+        "stored",
+        "raw",
+        "source_rms",
+        "source_std",
+        "reference_rms",
+        "reference_std",
+    }:
+        raise ValueError(
+            f"Unsupported x_normalization '{x_normalization}'. Use one of: "
+            "stored, raw, source_rms, source_std, reference_rms, reference_std."
+        )
 
     result = dict(pdf_result)
     result["bin_edges"] = np.asarray(pdf_result["bin_edges"], dtype=np.float64).copy()
@@ -331,22 +501,91 @@ def rescale_field_pdf_for_plot(pdf_result, x_normalization="stored"):
     if resolved == "stored":
         return result
 
-    scale = float(pdf_result.get("measured_normalization_scale", pdf_result.get("normalization_scale", 0.0)))
-    offset = float(pdf_result.get("normalization_offset", 0.0))
-    if not np.isfinite(scale) or abs(scale) <= 1.0e-30:
+    stored_scale = float(
+        pdf_result.get("measured_normalization_scale", pdf_result.get("normalization_scale", 0.0))
+    )
+    stored_offset = float(pdf_result.get("normalization_offset", 0.0))
+    if not np.isfinite(stored_scale) or abs(stored_scale) <= 1.0e-30:
         raise ValueError(
-            "Cannot replot this stored PDF in raw units because the normalization scale is not usable."
+            "Cannot replot this stored PDF because the saved normalization scale is not usable."
         )
 
-    result["bin_edges"] = result["bin_edges"] * scale + offset
-    result["bin_centers"] = result["bin_centers"] * scale + offset
-    result["pdf"] = result["pdf"] / abs(scale)
+    target_scale, target_offset, target_label = _normalization_target_parameters(pdf_result, resolved)
+    if not np.isfinite(target_scale) or abs(target_scale) <= 1.0e-30:
+        raise ValueError(
+            f"Cannot replot this stored PDF with x_normalization='{resolved}' because the target scale is not usable."
+        )
+
+    raw_edges = result["bin_edges"] * stored_scale + stored_offset
+    raw_centers = result["bin_centers"] * stored_scale + stored_offset
+    raw_pdf = result["pdf"] / abs(stored_scale)
+
+    result["bin_edges"] = (raw_edges - target_offset) / target_scale
+    result["bin_centers"] = (raw_centers - target_offset) / target_scale
+    result["pdf"] = raw_pdf * abs(target_scale)
     result["value_range_min"] = float(result["bin_edges"][0])
     result["value_range_max"] = float(result["bin_edges"][-1])
-    result["x_label"] = str(pdf_result.get("raw_x_label", pdf_result.get("source_field", "Value")))
-    result["plot_title"] = f"{pdf_result.get('plot_title', 'Field PDF')} [raw units]"
-    result["x_normalization"] = "raw"
+    result["x_label"] = target_label
+    if resolved == "raw":
+        result["plot_title"] = f"{pdf_result.get('plot_title', 'Field PDF')} [raw units]"
+    else:
+        result["plot_title"] = f"{pdf_result.get('plot_title', 'Field PDF')} [{resolved}]"
+    result["x_normalization"] = resolved
     return result
+
+
+def smooth_field_pdf_for_plot(
+    pdf_result,
+    *,
+    x_normalization="stored",
+    smoothing=DEFAULT_FIELD_PDF_SMOOTHING,
+    sigma_bins=DEFAULT_FIELD_PDF_SMOOTH_SIGMA_BINS,
+):
+    """Return a plotting copy of one stored PDF with weighted Gaussian smoothing."""
+    plotted = rescale_field_pdf_for_plot(pdf_result, x_normalization=x_normalization)
+    resolved_smoothing = str(smoothing or "none").strip().lower()
+    if resolved_smoothing == "none":
+        return plotted
+    if resolved_smoothing != DEFAULT_FIELD_PDF_SMOOTHING:
+        raise ValueError(
+            f"Unsupported PDF smoothing '{smoothing}'. Use one of: none, {DEFAULT_FIELD_PDF_SMOOTHING}."
+        )
+
+    resolved_sigma_bins = float(sigma_bins)
+    if not np.isfinite(resolved_sigma_bins) or resolved_sigma_bins <= 0.0:
+        raise ValueError("sigma_bins must be positive for smoothed PDF plotting.")
+
+    centers = np.asarray(plotted["bin_centers"], dtype=np.float64)
+    bin_edges = np.asarray(plotted["bin_edges"], dtype=np.float64)
+    bin_widths = np.diff(bin_edges)
+    if centers.size == 0 or bin_widths.size == 0:
+        raise ValueError("Cannot smooth an empty stored PDF.")
+
+    bandwidth = resolved_sigma_bins * float(np.mean(bin_widths))
+    if not np.isfinite(bandwidth) or bandwidth <= 0.0:
+        raise ValueError("Computed smoothing bandwidth is not usable.")
+
+    bin_masses = np.asarray(plotted["pdf"], dtype=np.float64) * bin_widths
+    offsets = (centers[:, None] - centers[None, :]) / bandwidth
+    kernel = np.exp(-0.5 * offsets**2, dtype=np.float64) / (np.sqrt(2.0 * np.pi) * bandwidth)
+    smoothed_pdf = kernel @ bin_masses
+
+    target_integral = float(np.sum(bin_masses, dtype=np.float64))
+    smoothed_integral = float(np.sum(smoothed_pdf * bin_widths, dtype=np.float64))
+    if target_integral > 0.0 and smoothed_integral > 0.0:
+        smoothed_pdf *= target_integral / smoothed_integral
+
+    smoothed = dict(plotted)
+    smoothed["bin_edges"] = bin_edges.copy()
+    smoothed["bin_centers"] = centers.copy()
+    smoothed["pdf"] = np.asarray(smoothed_pdf, dtype=np.float64)
+    smoothed["pdf_integral"] = float(np.sum(smoothed["pdf"] * bin_widths, dtype=np.float64))
+    smoothed["smoothing"] = DEFAULT_FIELD_PDF_SMOOTHING
+    smoothed["smoothing_kernel"] = "gaussian"
+    smoothed["smoothing_sigma_bins"] = resolved_sigma_bins
+    smoothed["smoothing_bandwidth"] = float(bandwidth)
+    smoothed["smoothing_target_integral"] = float(target_integral)
+    return smoothed
 
 
 def _configure_pdf_axes(ax, *, x_formatter, y_scale):
@@ -468,6 +707,25 @@ def _plot_field_pdf_matplotlib(plotted, output_path, *, plot=False, y_scale="log
     return output_path
 
 
+def _render_field_pdf(plotted, output_path, *, plot=False, y_scale="log", x_range=None, backend="yt"):
+    """Render one already prepared field PDF."""
+    resolved_y_scale = str(y_scale or "linear").strip().lower()
+    if resolved_y_scale not in {"linear", "log"}:
+        raise ValueError(f"Unsupported y_scale '{y_scale}'. Use one of: linear, log.")
+    resolved_backend = str(backend or "yt").strip().lower()
+    if resolved_backend == "yt":
+        return _plot_field_pdf_yt(plotted, output_path, plot=plot, y_scale=resolved_y_scale, x_range=x_range)
+    if resolved_backend == "matplotlib":
+        return _plot_field_pdf_matplotlib(
+            plotted,
+            output_path,
+            plot=plot,
+            y_scale=resolved_y_scale,
+            x_range=x_range,
+        )
+    raise ValueError(f"Unsupported PDF plotting backend '{backend}'. Use one of: yt, matplotlib.")
+
+
 def plot_field_pdf(
     pdf_result,
     output_path,
@@ -480,15 +738,43 @@ def plot_field_pdf(
 ):
     """Plot one stored field PDF to disk using the requested rendering backend."""
     plotted = rescale_field_pdf_for_plot(pdf_result, x_normalization=x_normalization)
-    resolved_y_scale = str(y_scale or "linear").strip().lower()
-    if resolved_y_scale not in {"linear", "log"}:
-        raise ValueError(f"Unsupported y_scale '{y_scale}'. Use one of: linear, log.")
-    resolved_backend = str(backend or "yt").strip().lower()
-    if resolved_backend == "yt":
-        return _plot_field_pdf_yt(plotted, output_path, plot=plot, y_scale=resolved_y_scale, x_range=x_range)
-    if resolved_backend == "matplotlib":
-        return _plot_field_pdf_matplotlib(plotted, output_path, plot=plot, y_scale=resolved_y_scale, x_range=x_range)
-    raise ValueError(f"Unsupported PDF plotting backend '{backend}'. Use one of: yt, matplotlib.")
+    return _render_field_pdf(
+        plotted,
+        output_path,
+        plot=plot,
+        y_scale=y_scale,
+        x_range=x_range,
+        backend=backend,
+    )
+
+
+def plot_smoothed_field_pdf(
+    pdf_result,
+    output_path,
+    *,
+    plot=False,
+    y_scale="log",
+    x_normalization="stored",
+    x_range=None,
+    backend="yt",
+    smoothing=DEFAULT_FIELD_PDF_SMOOTHING,
+    sigma_bins=DEFAULT_FIELD_PDF_SMOOTH_SIGMA_BINS,
+):
+    """Plot one stored field PDF after weighted Gaussian smoothing."""
+    plotted = smooth_field_pdf_for_plot(
+        pdf_result,
+        x_normalization=x_normalization,
+        smoothing=smoothing,
+        sigma_bins=sigma_bins,
+    )
+    return _render_field_pdf(
+        plotted,
+        output_path,
+        plot=plot,
+        y_scale=y_scale,
+        x_range=x_range,
+        backend=backend,
+    )
 
 
 def export_field_pdf_csv(pdf_result, output_path):
@@ -518,9 +804,33 @@ def print_field_pdf_summary(pdf_result, *, output_path=None):
         "  Source field std  : "
         f"{float(pdf_result.get('source_field_std', pdf_result.get('normalization_scale', 0.0))):.6g}"
     )
+    print(
+        "  Source field rms  : "
+        f"{float(pdf_result.get('source_field_rms', pdf_result.get('normalization_scale', 0.0))):.6g}"
+    )
     print(f"  Normalization     : {pdf_result['normalization']}")
     print(f"  Normalization scale: {float(pdf_result['normalization_scale']):.6g}")
     print(f"  Normalization offset: {float(pdf_result.get('normalization_offset', 0.0)):.6g}")
+    if str(pdf_result.get("normalization_reference_field", "")).strip():
+        print(
+            "  Normalization reference field: "
+            f"{pdf_result['normalization_reference_field']}"
+        )
+    if "normalization_reference_std" in pdf_result:
+        print(
+            "  Normalization reference std: "
+            f"{float(pdf_result['normalization_reference_std']):.6g}"
+        )
+    if str(pdf_result.get("normalization_reference_label", "")).strip():
+        print(
+            "  Normalization reference label: "
+            f"{pdf_result['normalization_reference_label']}"
+        )
+    if "normalization_reference_rms" in pdf_result:
+        print(
+            "  Normalization reference rms: "
+            f"{float(pdf_result['normalization_reference_rms']):.6g}"
+        )
     if "measured_normalization_scale" in pdf_result:
         print(
             "  Measured normalization scale: "

@@ -55,6 +55,7 @@ class TestFieldPdfStorage(unittest.TestCase):
             "source_field_max": 4.0,
             "source_field_mean": 0.0,
             "source_field_std": 2.0,
+            "source_field_rms": 2.0,
             "normalization_scale": 2.0,
             "normalization_offset": 0.0,
             "value_range_min": -1.0,
@@ -78,6 +79,7 @@ class TestFieldPdfStorage(unittest.TestCase):
         self.assertEqual(float(loaded["attrs"]["source_field_min"]), -4.0)
         self.assertEqual(float(loaded["attrs"]["source_field_max"]), 4.0)
         self.assertEqual(float(loaded["attrs"]["source_field_std"]), 2.0)
+        self.assertEqual(float(loaded["attrs"]["source_field_rms"]), 2.0)
         self.assertEqual(float(loaded["attrs"]["normalization_offset"]), 0.0)
 
 

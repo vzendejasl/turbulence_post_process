@@ -409,7 +409,20 @@ def _value_normalization_scale(mode, attrs):
     if resolved == "global_rms":
         rms = float(attrs.get("global_rms", 0.0))
         return rms if abs(rms) > 1.0e-30 else None
+    if resolved == "global_std":
+        std = float(attrs.get("global_std", 0.0))
+        return std if abs(std) > 1.0e-30 else None
     return None
+
+
+def _value_normalization_offset(mode, attrs):
+    """Return the additive offset used before scaling for one normalization mode."""
+    resolved = str(mode or "none").strip().lower()
+    if resolved in {"none", "global_rms"}:
+        return 0.0
+    if resolved == "global_std":
+        return float(attrs.get("global_mean", 0.0))
+    return 0.0
 
 
 def _resolve_value_normalization_mode(requested_mode, attrs):
@@ -447,26 +460,38 @@ def _apply_normalization(saved, value_normalization_mode, normalize, print_stats
     stored_limits_saved = _stored_global_limits(attrs)
     saved_scale = _value_normalization_scale(saved_value_normalization, attrs)
     target_scale = _value_normalization_scale(value_normalization, attrs)
+    saved_offset = _value_normalization_offset(saved_value_normalization, attrs)
+    target_offset = _value_normalization_offset(value_normalization, attrs)
 
     if saved_scale is None:
         saved_scale = 1.0
         saved_value_normalization = "none"
+        saved_offset = 0.0
         if print_stats:
-            print("Saved slice metadata requested RMS normalization, but no usable global RMS was stored. Treating values as unnormalized.")
+            print(
+                "Saved slice metadata requested value normalization, but no usable stored scale was found. "
+                "Treating values as unnormalized."
+            )
 
     if target_scale is None:
         if print_stats:
-            print("Requested RMS normalization, but no usable global RMS was stored. Leaving values unchanged.")
+            print("Requested value normalization, but no usable stored scale was found. Leaving values unchanged.")
         value_normalization = saved_value_normalization
         target_scale = saved_scale
+        target_offset = saved_offset
 
-    conversion_factor = float(saved_scale) / float(target_scale)
-    values = np.round(values_stored * conversion_factor, decimals=10)
+    values_raw = values_stored * float(saved_scale) + float(saved_offset)
+    values = np.round((values_raw - float(target_offset)) / float(target_scale), decimals=10)
     stored_limits_raw = None
+    stored_limits_value_normalized = None
     if stored_limits_saved is not None:
         stored_limits_raw = (
-            float(stored_limits_saved[0] * conversion_factor),
-            float(stored_limits_saved[1] * conversion_factor),
+            float(stored_limits_saved[0] * float(saved_scale) + float(saved_offset)),
+            float(stored_limits_saved[1] * float(saved_scale) + float(saved_offset)),
+        )
+        stored_limits_value_normalized = (
+            float((stored_limits_raw[0] - float(target_offset)) / float(target_scale)),
+            float((stored_limits_raw[1] - float(target_offset)) / float(target_scale)),
         )
 
     if print_stats:
@@ -477,6 +502,8 @@ def _apply_normalization(saved, value_normalization_mode, normalize, print_stats
             print(f"Stored global 3D colorbar max: {stored_limits_saved[1]:.6g}")
         if "global_rms" in attrs:
             print(f"Stored global 3D RMS normalization: {float(attrs['global_rms']):.6g}")
+        if "global_std" in attrs:
+            print(f"Stored global 3D std normalization: {float(attrs['global_std']):.6g}")
         if "global_mean" in attrs:
             print(f"Stored global 3D average: {float(attrs['global_mean']):.6g}")
         print(f"Saved value normalization: {saved_value_normalization}")
@@ -493,21 +520,21 @@ def _apply_normalization(saved, value_normalization_mode, normalize, print_stats
         attrs["normalization"] = "none"
         attrs["normalization_factor"] = 1.0
         attrs["display_normalization"] = _display_normalization_label(value_normalization, "none")
-        if stored_limits_raw is not None:
-            attrs["global_min"] = float(stored_limits_raw[0])
-            attrs["global_max"] = float(stored_limits_raw[1])
+        if stored_limits_value_normalized is not None:
+            attrs["global_min"] = float(stored_limits_value_normalized[0])
+            attrs["global_max"] = float(stored_limits_value_normalized[1])
         if normalize and print_stats:
             print(
                 f"Normalization requested, but field '{attrs.get('field_name', '')}' "
                 "is neither velocity nor vorticity. Leaving values unchanged."
             )
         if print_stats:
-            if stored_limits_raw is None:
+            if stored_limits_value_normalized is None:
                 print(f"Using 2D slice fallback min: {float(np.min(values)):.6g}")
                 print(f"Using 2D slice fallback max: {float(np.max(values)):.6g}")
             else:
-                print(f"Using stored global 3D colorbar min: {stored_limits_raw[0]:.6g}")
-                print(f"Using stored global 3D colorbar max: {stored_limits_raw[1]:.6g}")
+                print(f"Using stored global 3D colorbar min: {stored_limits_value_normalized[0]:.6g}")
+                print(f"Using stored global 3D colorbar max: {stored_limits_value_normalized[1]:.6g}")
         normalized = dict(saved)
         normalized["values"] = values
         normalized["attrs"] = attrs
@@ -530,9 +557,9 @@ def _apply_normalization(saved, value_normalization_mode, normalize, print_stats
         attrs["normalization_factor"] = normalization_factor
         attrs["normalization_reference_scale"] = reference_scale
         attrs["display_normalization"] = _display_normalization_label(value_normalization, mode)
-        if stored_limits_raw is not None:
-            attrs["global_min"] = float(stored_limits_raw[0] * normalization_factor)
-            attrs["global_max"] = float(stored_limits_raw[1] * normalization_factor)
+        if stored_limits_value_normalized is not None:
+            attrs["global_min"] = float(stored_limits_value_normalized[0] * normalization_factor)
+            attrs["global_max"] = float(stored_limits_value_normalized[1] * normalization_factor)
 
         if print_stats:
             print("Applying normalization: vorticity")
@@ -541,7 +568,7 @@ def _apply_normalization(saved, value_normalization_mode, normalize, print_stats
             print(f"  Reference scale U0/L = {reference_scale:.6g}")
             print("  Units check: omega has units 1/T and U0/L has units 1/T.")
             print(f"  Normalization uses omega* = omega / (U0/L) = omega * {normalization_factor:.6g}")
-            if stored_limits_raw is None:
+            if stored_limits_value_normalized is None:
                 print(f"Normalized 2D slice fallback min: {float(np.min(values)):.6g}")
                 print(f"Normalized 2D slice fallback max: {float(np.max(values)):.6g}")
             else:
@@ -569,16 +596,16 @@ def _apply_normalization(saved, value_normalization_mode, normalize, print_stats
         attrs["normalization_factor"] = normalization_factor
         attrs["normalization_reference_scale"] = reference_scale
         attrs["display_normalization"] = _display_normalization_label(value_normalization, mode)
-        if stored_limits_raw is not None:
-            attrs["global_min"] = float(stored_limits_raw[0] * normalization_factor)
-            attrs["global_max"] = float(stored_limits_raw[1] * normalization_factor)
+        if stored_limits_value_normalized is not None:
+            attrs["global_min"] = float(stored_limits_value_normalized[0] * normalization_factor)
+            attrs["global_max"] = float(stored_limits_value_normalized[1] * normalization_factor)
 
         if print_stats:
             print("Applying normalization: velocity")
             print(f"  U0 = {U0:.6g}")
             print("  Units check: |u| has units L/T and U0 has units L/T.")
             print(f"  Normalization uses u* = u / U0 = u * {normalization_factor:.6g}")
-            if stored_limits_raw is None:
+            if stored_limits_value_normalized is None:
                 print(f"Normalized 2D slice fallback min: {float(np.min(values)):.6g}")
                 print(f"Normalized 2D slice fallback max: {float(np.max(values)):.6g}")
             else:
@@ -1627,6 +1654,8 @@ def print_saved_slice_metadata(slice_file, field_name, slice_tag):
         print(f"Stored global 3D colorbar max: {float(attrs['global_max']):.6g}")
     if "global_rms" in attrs:
         print(f"Stored global 3D RMS normalization: {float(attrs['global_rms']):.6g}")
+    if "global_std" in attrs:
+        print(f"Stored global 3D std normalization: {float(attrs['global_std']):.6g}")
     if "global_mean" in attrs:
         print(f"Stored global 3D average: {float(attrs['global_mean']):.6g}")
     print(f"Stored value normalization: {str(attrs.get('value_normalization', 'none'))}")
@@ -1773,8 +1802,8 @@ def main():
         "--value-normalization",
         "--norm",
         default="saved",
-        choices=["saved", "none", "global_rms"],
-        help="Saved-value normalization to display on replot: 'saved' preserves the slice file's stored normalization, 'none' shows raw values, and 'global_rms' applies the stored full-volume RMS when available.",
+        choices=["saved", "none", "global_rms", "global_std"],
+        help="Saved-value normalization to display on replot: 'saved' preserves the slice file's stored normalization, 'none' shows raw values, 'global_rms' applies the stored full-volume RMS when available, and 'global_std' applies the stored full-volume mean/std when available.",
     )
     parser.add_argument(
         "--normalize",
