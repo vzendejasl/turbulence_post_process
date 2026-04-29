@@ -219,6 +219,7 @@ def save_spectra(
     mach_number_stats=None,
     turbulent_mach_number_stats=None,
     turbulent_mach_fluctuation_stats=None,
+    mean_velocity_component_stats=None,
 ):
     """Save integer-shell and physical-density spectra text files plus metadata."""
     stem = _spectra_output_stem(filename)
@@ -331,6 +332,14 @@ def save_spectra(
                 f"rms={float(mach_number_stats['global_rms']):.16e}, "
                 f"avg={float(mach_number_stats['global_mean']):.16e}\n"
             )
+        if mean_velocity_component_stats is not None:
+            handle.write(
+                "# Mean velocity components: "
+                f"<u>={float(mean_velocity_component_stats['mean_vx']):.16e}, "
+                f"<v>={float(mean_velocity_component_stats['mean_vy']):.16e}, "
+                f"<w>={float(mean_velocity_component_stats['mean_vz']):.16e}, "
+                f"|<u_i>|={float(mean_velocity_component_stats['mean_speed_magnitude']):.16e}\n"
+            )
         if turbulent_mach_number_stats is not None:
             handle.write(
                 "# Turbulent Mach number: "
@@ -401,6 +410,14 @@ def save_spectra(
                 f"max={float(mach_number_stats['global_max']):.16e}, "
                 f"rms={float(mach_number_stats['global_rms']):.16e}, "
                 f"avg={float(mach_number_stats['global_mean']):.16e}\n"
+            )
+        if mean_velocity_component_stats is not None:
+            handle.write(
+                "# Mean velocity components: "
+                f"<u>={float(mean_velocity_component_stats['mean_vx']):.16e}, "
+                f"<v>={float(mean_velocity_component_stats['mean_vy']):.16e}, "
+                f"<w>={float(mean_velocity_component_stats['mean_vz']):.16e}, "
+                f"|<u_i>|={float(mean_velocity_component_stats['mean_speed_magnitude']):.16e}\n"
             )
         if turbulent_mach_number_stats is not None:
             handle.write(

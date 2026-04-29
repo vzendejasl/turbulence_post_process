@@ -605,8 +605,15 @@ That same file can now also store full-field PDFs under a top-level `pdfs/`
 group. Built-in PDFs currently include:
 
   chi = div_u / rms(div_u)
+  omega_hat = |omega| / rms(|omega|)
+  u_hat = u / rms(u)
   rho_hat = density / rms(density)
   p_hat = pressure / rms(pressure)
+
+The PDF selection is field-aware:
+  - velocity-only inputs still produce the available velocity and vorticity PDFs
+  - density/pressure/Mach PDFs are skipped automatically when those fields are
+    not present in the input file
 
 The PDF currently uses a variable bin range taken from the global min/max of
 the normalized field.  This is convenient for first-pass analysis, but it means
@@ -668,6 +675,12 @@ Inspect and replot stored full-field PDFs:
     --metadata
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
     --pdf normalized_velocity_magnitude \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_vorticity_magnitude \
+    --metadata
+  python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
+    --pdf normalized_u \
     --metadata
   python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 \
     --pdf normalized_density \

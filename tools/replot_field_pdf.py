@@ -16,8 +16,10 @@ Examples:
   Replot by numeric selector shown in --list output:
     python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf 1
 
-  Replot the normalized velocity, density, pressure, or Mach-number PDF:
+  Replot the normalized velocity, vorticity, first-component, density, pressure, or Mach-number PDF:
     python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf normalized_velocity_magnitude
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf normalized_vorticity_magnitude
+    python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf normalized_u
     python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf normalized_density
     python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf normalized_pressure
     python tools/replot_field_pdf.py data/slice_data/SampledData0_slices.h5 --pdf normalized_mach_number
@@ -81,6 +83,16 @@ PDF_NAME_ALIASES = {
     "velocity": "normalized_velocity_magnitude",
     "normalized_velocity": "normalized_velocity_magnitude",
     "velocity_magnitude": "normalized_velocity_magnitude",
+    "vorticity": "normalized_vorticity_magnitude",
+    "normalized_vorticity": "normalized_vorticity_magnitude",
+    "vorticity_magnitude": "normalized_vorticity_magnitude",
+    "omega": "normalized_vorticity_magnitude",
+    "normalized_omega": "normalized_vorticity_magnitude",
+    "u": "normalized_u",
+    "u1": "normalized_u",
+    "vx": "normalized_u",
+    "normalized_u1": "normalized_u",
+    "normalized_vx": "normalized_u",
     "density": "normalized_density",
     "pressure": "normalized_pressure",
     "mach": "normalized_mach_number",
@@ -165,13 +177,13 @@ def main():
         default=None,
         help=(
             "Stored PDF selector to replot or export. Accepts a PDF name or "
-            "a number from --list output, e.g. 1, normalized_dilatation, density, mach."
+            "a number from --list output, e.g. 1, normalized_dilatation, vorticity, u, density, mach."
         ),
     )
     parser.add_argument(
         "--normalized",
         action="store_true",
-        help="Interpret short field names passed to --pdf as normalized PDF names, e.g. --pdf density --normalized or --pdf mach --normalized.",
+        help="Interpret short field names passed to --pdf as normalized PDF names, e.g. --pdf u --normalized, --pdf density --normalized, or --pdf mach --normalized.",
     )
     parser.add_argument("--output", "--out", dest="output", default=None, help="Optional output plot path")
     parser.add_argument("--format", "--fmt", dest="format", default="pdf", choices=["pdf", "png"], help="Output image format when --output is omitted.")

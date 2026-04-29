@@ -168,6 +168,7 @@ def analyze_file_parallel(
     mach_number_stats = None
     turbulent_mach_number_stats = None
     turbulent_mach_fluctuation_stats = None
+    mean_velocity_component_stats = None
     if has_thermo_inputs:
         if thermo_gamma <= 0.0:
             raise ValueError(f"Thermodynamic gamma must be positive. Received {thermo_gamma!r}.")
@@ -202,6 +203,12 @@ def analyze_file_parallel(
         mean_vx = float(global_mean(local_vx, comm))
         mean_vy = float(global_mean(local_vy, comm))
         mean_vz = float(global_mean(local_vz, comm))
+        mean_velocity_component_stats = {
+            "mean_vx": mean_vx,
+            "mean_vy": mean_vy,
+            "mean_vz": mean_vz,
+            "mean_speed_magnitude": float(np.sqrt(mean_vx**2 + mean_vy**2 + mean_vz**2)),
+        }
         fluctuation_speed_scale_sq = max(
             2.0 * total_ke - (mean_vx**2 + mean_vy**2 + mean_vz**2),
             0.0,
@@ -373,6 +380,15 @@ def analyze_file_parallel(
         _print_scalar_stats_block("Sound speed", sound_speed_stats)
         print()
         _print_scalar_stats_block("Mach number", mach_number_stats)
+        print()
+        print("  Mean velocity components:")
+        print(f"    <u> = {float(mean_velocity_component_stats['mean_vx']):.8e}")
+        print(f"    <v> = {float(mean_velocity_component_stats['mean_vy']):.8e}")
+        print(f"    <w> = {float(mean_velocity_component_stats['mean_vz']):.8e}")
+        print(
+            "    |<u_i>| = "
+            f"{float(mean_velocity_component_stats['mean_speed_magnitude']):.8e}"
+        )
         print()
         print("  Turbulent Mach number:")
         print(
@@ -615,6 +631,7 @@ def analyze_file_parallel(
             mach_number_stats=mach_number_stats,
             turbulent_mach_number_stats=turbulent_mach_number_stats,
             turbulent_mach_fluctuation_stats=turbulent_mach_fluctuation_stats,
+            mean_velocity_component_stats=mean_velocity_component_stats,
         )
         save_component_spectra(
             k_centers,
@@ -706,6 +723,7 @@ def analyze_file_parallel(
             "mach_number_stats": mach_number_stats,
             "turbulent_mach_number_stats": turbulent_mach_number_stats,
             "turbulent_mach_fluctuation_stats": turbulent_mach_fluctuation_stats,
+            "mean_velocity_component_stats": mean_velocity_component_stats,
             "r_values": r_values,
             "S_L": structure_function_longitudinal,
             "structure_function_path": structure_function_path,

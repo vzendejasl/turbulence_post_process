@@ -44,6 +44,26 @@ FIELD_PDF_REGISTRY = {
         "raw_x_label": r"$|\mathbf{u}|$",
         "y_label": "PDF",
     },
+    "normalized_vorticity_magnitude": {
+        "pdf_name": "normalized_vorticity_magnitude",
+        "source_field": "vorticity_magnitude",
+        "source_field_family": "vorticity",
+        "normalization": "global_std",
+        "plot_title": "Normalized Vorticity Magnitude PDF",
+        "x_label": r"$\left(|\boldsymbol{\omega}| - \langle |\boldsymbol{\omega}| \rangle\right) / \mathrm{std}(|\boldsymbol{\omega}|)$",
+        "raw_x_label": r"$|\boldsymbol{\omega}|$",
+        "y_label": "PDF",
+    },
+    "normalized_u": {
+        "pdf_name": "normalized_u",
+        "source_field": "vx",
+        "source_field_family": "velocity",
+        "normalization": "global_std",
+        "plot_title": "Normalized First Velocity-Component PDF",
+        "x_label": r"$\left(u - \langle u \rangle\right) / \mathrm{std}(u)$",
+        "raw_x_label": r"$u$",
+        "y_label": "PDF",
+    },
     "normalized_density": {
         "pdf_name": "normalized_density",
         "source_field": "density",
@@ -85,6 +105,10 @@ def default_field_pdf_specs(field_specs, force_normalized_dilatation=False):
         specs.append(dict(FIELD_PDF_REGISTRY["normalized_dilatation"]))
     if "velocity_magnitude" in available_fields:
         specs.append(dict(FIELD_PDF_REGISTRY["normalized_velocity_magnitude"]))
+    if "vorticity_magnitude" in available_fields:
+        specs.append(dict(FIELD_PDF_REGISTRY["normalized_vorticity_magnitude"]))
+    if "vx" in available_fields:
+        specs.append(dict(FIELD_PDF_REGISTRY["normalized_u"]))
     if "density" in available_fields:
         specs.append(dict(FIELD_PDF_REGISTRY["normalized_density"]))
     if "pressure" in available_fields:

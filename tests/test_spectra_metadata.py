@@ -71,6 +71,12 @@ class TestSpectraMetadata(unittest.TestCase):
                 "global_rms": 0.125,
                 "global_mean": 0.125,
             }
+            mean_velocity_component_stats = {
+                "mean_vx": 1.0e-6,
+                "mean_vy": -2.0e-6,
+                "mean_vz": 3.0e-6,
+                "mean_speed_magnitude": float(np.sqrt(14.0e-12)),
+            }
 
             save_spectra(
                 values,
@@ -108,6 +114,7 @@ class TestSpectraMetadata(unittest.TestCase):
                 mach_number_stats=stats,
                 turbulent_mach_number_stats=turbulent_stats,
                 turbulent_mach_fluctuation_stats=turbulent_fluctuation_stats,
+                mean_velocity_component_stats=mean_velocity_component_stats,
             )
 
             metadata_path = input_path.with_name("synthetic_case_spectra_metadata.txt")
@@ -116,6 +123,7 @@ class TestSpectraMetadata(unittest.TestCase):
             self.assertIn("# Thermodynamic gamma:", metadata_text)
             self.assertIn("# Sound speed stats:", metadata_text)
             self.assertIn("# Mach number stats:", metadata_text)
+            self.assertIn("# Mean velocity components:", metadata_text)
             self.assertIn(
                 "# Turbulent Mach number: Mt_raw = sqrt(2<KE>) / c_mean = 2.5000000000000000e-01",
                 metadata_text,

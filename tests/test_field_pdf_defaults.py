@@ -22,6 +22,8 @@ class TestFieldPdfDefaults(unittest.TestCase):
         field_specs = [
             ("div_u", "div_u", r"$\theta$", "divergence"),
             ("velocity_magnitude", "velocity_magnitude", r"$|\mathbf{u}|$", "velocity"),
+            ("vorticity_magnitude", "vorticity_magnitude", r"$|\boldsymbol{\omega}|$", "vorticity"),
+            ("vx", "vx", r"$u_1$", "velocity"),
             ("density", "density", r"$\rho$", "scalar"),
             ("pressure", "pressure", r"$p$", "scalar"),
             ("mach_number", "mach_number", r"$M$", "thermo"),
@@ -33,6 +35,8 @@ class TestFieldPdfDefaults(unittest.TestCase):
             [
                 "normalized_dilatation",
                 "normalized_velocity_magnitude",
+                "normalized_vorticity_magnitude",
+                "normalized_u",
                 "normalized_density",
                 "normalized_pressure",
                 "normalized_mach_number",
@@ -88,17 +92,69 @@ class TestFieldPdfDefaults(unittest.TestCase):
             available = list_available_pdfs(slice_data_path)
             self.assertIn("normalized_dilatation", available)
             self.assertIn("normalized_velocity_magnitude", available)
+            self.assertIn("normalized_vorticity_magnitude", available)
+            self.assertIn("normalized_u", available)
             self.assertIn("normalized_density", available)
             self.assertIn("normalized_pressure", available)
             self.assertIn("normalized_mach_number", available)
             self.assertEqual(available["normalized_velocity_magnitude"]["source_field"], "velocity_magnitude")
             self.assertEqual(available["normalized_velocity_magnitude"]["normalization"], "global_std")
+            self.assertEqual(available["normalized_vorticity_magnitude"]["source_field"], "vorticity_magnitude")
+            self.assertEqual(available["normalized_vorticity_magnitude"]["normalization"], "global_std")
+            self.assertEqual(available["normalized_u"]["source_field"], "vx")
+            self.assertEqual(available["normalized_u"]["normalization"], "global_std")
             self.assertEqual(available["normalized_density"]["source_field"], "density")
             self.assertEqual(available["normalized_density"]["normalization"], "global_std")
             self.assertEqual(available["normalized_pressure"]["source_field"], "pressure")
             self.assertEqual(available["normalized_pressure"]["normalization"], "global_std")
             self.assertEqual(available["normalized_mach_number"]["source_field"], "mach_number")
             self.assertEqual(available["normalized_mach_number"]["normalization"], "global_std")
+
+    @unittest.skipIf(MPI is None, "mpi4py is not installed in this test environment")
+    def test_pdf_only_visualization_with_velocity_only_input_skips_missing_thermo_pdfs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="field_pdf_velocity_only_") as tmpdir:
+            input_path = os.path.join(tmpdir, "velocity_only.h5")
+            with h5py.File(input_path, "w") as hf:
+                hf.attrs["step"] = "0"
+                hf.attrs["time"] = 0.0
+                hf.attrs["periodic_duplicate_last"] = False
+                grid = hf.create_group("grid")
+                for axis_name in ("x", "y", "z"):
+                    grid.create_dataset(axis_name, data=np.array([0.0, 1.0], dtype=np.float64))
+                fields = hf.create_group("fields")
+                shape = (2, 2, 2)
+                fields.create_dataset(
+                    "vx",
+                    data=np.array(
+                        [[[0.0, 1.0], [2.0, 3.0]], [[4.0, 5.0], [6.0, 7.0]]],
+                        dtype=np.float64,
+                    ),
+                )
+                fields.create_dataset("vy", data=np.zeros(shape, dtype=np.float64))
+                fields.create_dataset("vz", data=np.zeros(shape, dtype=np.float64))
+
+            _, slice_data_path = run_visualization(
+                input_path,
+                comm=MPI.COMM_SELF,
+                assume_structured_h5=True,
+                save_slice_data=True,
+                pdf_only=True,
+                pdf_bins=16,
+            )
+
+            self.assertIsNotNone(slice_data_path)
+
+            available = list_available_pdfs(slice_data_path)
+            self.assertIn("normalized_dilatation", available)
+            self.assertIn("normalized_velocity_magnitude", available)
+            self.assertIn("normalized_vorticity_magnitude", available)
+            self.assertIn("normalized_u", available)
+            self.assertNotIn("normalized_density", available)
+            self.assertNotIn("normalized_pressure", available)
+            self.assertNotIn("normalized_mach_number", available)
+            self.assertEqual(available["normalized_velocity_magnitude"]["source_field"], "velocity_magnitude")
+            self.assertEqual(available["normalized_vorticity_magnitude"]["source_field"], "vorticity_magnitude")
+            self.assertEqual(available["normalized_u"]["source_field"], "vx")
 
 
 if __name__ == "__main__":

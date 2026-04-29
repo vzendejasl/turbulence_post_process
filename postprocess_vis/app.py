@@ -1033,7 +1033,8 @@ def run_visualization(
 
     prepared_path = data_file if assume_structured_h5 else ensure_structured_h5(data_file)
     requested_field_specs = resolve_requested_fields(prepared_path, field_names)
-    pdf_specs = default_field_pdf_specs(requested_field_specs, force_normalized_dilatation=pdf_only)
+    all_available_field_specs = list(available_field_specs(prepared_path).values())
+    pdf_specs = default_field_pdf_specs(all_available_field_specs, force_normalized_dilatation=pdf_only)
     field_specs = [] if pdf_only else requested_field_specs
     meta = read_grid_metadata(prepared_path)
     requests = [] if pdf_only else build_slice_requests(meta, slice_specs, axis)
@@ -1054,6 +1055,7 @@ def run_visualization(
     needs_mach_number = any(spec[0] == MACH_NUMBER_FIELD_NAME for spec in field_specs)
     needs_density_gradient = any(spec[3] == "density_gradient" for spec in field_specs)
     pdf_source_fields = {spec["source_field"] for spec in pdf_specs}
+    needs_vorticity = needs_vorticity or ("vorticity_magnitude" in pdf_source_fields)
     needs_divergence = needs_divergence or ("div_u" in pdf_source_fields)
     needs_mach_number = needs_mach_number or (MACH_NUMBER_FIELD_NAME in pdf_source_fields)
     derived_cache = None
