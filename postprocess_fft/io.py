@@ -220,6 +220,7 @@ def save_spectra(
     turbulent_mach_number_stats=None,
     turbulent_mach_fluctuation_stats=None,
     mean_velocity_component_stats=None,
+    L_int_spectral=None,
 ):
     """Save integer-shell and physical-density spectra text files plus metadata."""
     stem = _spectra_output_stem(filename)
@@ -300,6 +301,11 @@ def save_spectra(
             f"Rotational KE: {float(rot_ke):.16e}\n"
         )
         handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
+        if L_int_spectral is not None:
+            handle.write(
+                "# Integral length scale L_int (spectral, pi/2 * sum(E(k)) / sum(E(k)/k_phy)): "
+                f"{float(L_int_spectral):.16e}\n"
+            )
         if sijsij_mean is not None:
             handle.write(f"# Mean <SijSij>: {float(sijsij_mean):.16e}\n")
         if wiwi_mean is not None:
@@ -379,6 +385,11 @@ def save_spectra(
             f"Rotational KE: {float(rot_ke):.16e}\n"
         )
         handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
+        if L_int_spectral is not None:
+            handle.write(
+                "# Integral length scale L_int (spectral, pi/2 * sum(E(k)) / sum(E(k)/k_phy)): "
+                f"{float(L_int_spectral):.16e}\n"
+            )
         if sijsij_mean is not None:
             handle.write(f"# Mean <SijSij>: {float(sijsij_mean):.16e}\n")
         if wiwi_mean is not None:

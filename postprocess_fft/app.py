@@ -675,6 +675,14 @@ def analyze_file_parallel(
                 "max_rel_directional_spread": max_rel_directional_spread,
                 "r_at_max_rel_directional_spread": r_at_max_rel_directional_spread,
             }
+        _k_phy_mask = np.asarray(k_centers_phy, dtype=np.float64) > 0.0
+        _E_masked = np.asarray(E_total, dtype=np.float64)[_k_phy_mask]
+        _k_phy_masked = np.asarray(k_centers_phy, dtype=np.float64)[_k_phy_mask]
+        _sum_E = float(np.sum(_E_masked, dtype=np.float64))
+        _sum_E_over_k = float(np.sum(_E_masked / _k_phy_masked, dtype=np.float64))
+        L_int_spectral = (np.pi / 2.0) * _sum_E / _sum_E_over_k if _sum_E_over_k > 1.0e-30 else 0.0
+        print(f"  Integral length scale L_int (spectral, pi/2 * sum(E(k)) / sum(E(k)/k)): {L_int_spectral:.8f}")
+
         save_spectra(
             k_centers,
             k_centers_phy,
@@ -716,6 +724,7 @@ def analyze_file_parallel(
             turbulent_mach_number_stats=turbulent_mach_number_stats,
             turbulent_mach_fluctuation_stats=turbulent_mach_fluctuation_stats,
             mean_velocity_component_stats=mean_velocity_component_stats,
+            L_int_spectral=L_int_spectral,
         )
         save_component_spectra(
             k_centers,
@@ -851,6 +860,7 @@ def analyze_file_parallel(
             "fg_result": fg_result,
             "taylor_microscales": taylor_microscales,
             "integral_length_scales": integral_length_scales,
+            "L_int_spectral": L_int_spectral,
         }
 
     if return_analysis_context:
