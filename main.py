@@ -72,6 +72,11 @@ Examples:
         help="Sample axis-aligned structure functions over only the shortest periodic half-box (r = 0..L/2).",
     )
     parser.set_defaults(structure_function_full_box=True)
+    parser.add_argument(
+        "--correlations",
+        action="store_true",
+        help="Compute velocity correlation tensor Phi_ij(k), f(r), g(r), and derived length scales.",
+    )
     parser.add_argument("--slice-axis", default="z", choices=["x", "y", "z"], help="Default slice normal axis")
     parser.add_argument(
         "--slice",
@@ -273,6 +278,7 @@ Examples:
                         visualize=False,
                         compute_structure_functions=args.structure_functions,
                         structure_function_full_domain=args.structure_function_full_box,
+                        compute_correlations=args.correlations,
                         qr_joint_pdf_bins=args.qr_bins,
                         thermo_gamma=args.gamma,
                         return_analysis_context=True,

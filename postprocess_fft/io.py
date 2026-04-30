@@ -1064,3 +1064,295 @@ def plot_qr_joint_pdf(qr_result, filename):
             print(f"yt PhasePlot backend unavailable, falling back to Matplotlib: {exc}")
 
     return _plot_qr_joint_pdf_matplotlib(qr_result, output_path)
+
+
+# ------------------------------------------------------------------ #
+#  Velocity correlation tensor and f(r)/g(r) output
+# ------------------------------------------------------------------ #
+
+def plot_correlation_functions(fg, taylor_microscales, integral_length_scales, filename):
+    """Plot f(r) and g(r) correlation functions and save as PDFs.
+
+    Produces two figures in correlation_data/:
+      <base>_f_correlation.pdf  — longitudinal autocorrelation
+      <base>_g_correlation.pdf  — transverse autocorrelation
+    """
+    stem = _correlation_output_stem(filename)
+    r = fg["r"]
+
+    lam_f = taylor_microscales["lambda_f"]
+    lam_g = taylor_microscales["lambda_g"]
+    L_f = integral_length_scales["L_f"]
+    L_g = integral_length_scales["L_g"]
+
+    paths = []
+
+    # --- f(r) plot ---
+    with plt.rc_context(_plot_style()):
+        fig, ax = plt.subplots(figsize=(7, 5))
+
+        ax.plot(r, fg["f"], color="black", linewidth=2.0, label=r"$f(r)$ (avg)")
+        ax.plot(r, fg["f_x_norm"], linestyle="--", linewidth=1.0, alpha=0.7, label=r"$f_x(r)$")
+        ax.plot(r, fg["f_y_norm"], linestyle="--", linewidth=1.0, alpha=0.7, label=r"$f_y(r)$")
+        ax.plot(r, fg["f_z_norm"], linestyle="--", linewidth=1.0, alpha=0.7, label=r"$f_z(r)$")
+
+        ax.axhline(0, color="gray", linewidth=0.5, zorder=0)
+
+        if np.isfinite(lam_f) and lam_f > 0:
+            ax.axvline(lam_f, color="red", linestyle=":", linewidth=1.2,
+                       label=rf"$\lambda_f = {lam_f:.4g}$")
+        if np.isfinite(L_f) and L_f > 0:
+            ax.axvline(L_f, color="blue", linestyle="-.", linewidth=1.2,
+                       label=rf"$L_f = {L_f:.4g}$")
+
+        ax.set_xlabel(r"$r$")
+        ax.set_ylabel(r"$f(r)$")
+        ax.set_title(r"Longitudinal Autocorrelation $f(r)$")
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(left=0)
+        fig.tight_layout()
+
+        f_path = f"{stem}_f_correlation.pdf"
+        fig.savefig(f_path, bbox_inches="tight")
+        plt.close(fig)
+        paths.append(f_path)
+
+    # --- g(r) plot ---
+    with plt.rc_context(_plot_style()):
+        fig, ax = plt.subplots(figsize=(7, 5))
+
+        ax.plot(r, fg["g"], color="black", linewidth=2.0, label=r"$g(r)$ (avg)")
+
+        for tag, label in [("g_x_norm", r"$g_x(r)$"), ("g_y_norm", r"$g_y(r)$"), ("g_z_norm", r"$g_z(r)$")]:
+            curve = fg[tag]
+            if np.all(np.isfinite(curve)):
+                ax.plot(r, curve, linestyle="--", linewidth=1.0, alpha=0.7, label=label)
+
+        ax.axhline(0, color="gray", linewidth=0.5, zorder=0)
+
+        if np.isfinite(lam_g) and lam_g > 0:
+            ax.axvline(lam_g, color="red", linestyle=":", linewidth=1.2,
+                       label=rf"$\lambda_g = {lam_g:.4g}$")
+        if np.isfinite(L_g) and L_g > 0:
+            ax.axvline(L_g, color="blue", linestyle="-.", linewidth=1.2,
+                       label=rf"$L_g = {L_g:.4g}$")
+
+        ax.set_xlabel(r"$r$")
+        ax.set_ylabel(r"$g(r)$")
+        ax.set_title(r"Transverse Autocorrelation $g(r)$")
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(left=0)
+        fig.tight_layout()
+
+        g_path = f"{stem}_g_correlation.pdf"
+        fig.savefig(g_path, bbox_inches="tight")
+        plt.close(fig)
+        paths.append(g_path)
+
+    return paths
+
+
+def _correlation_output_stem(filename):
+    """Return the output stem inside a ``correlation_data/`` subdirectory."""
+    directory = os.path.dirname(os.path.abspath(filename))
+    output_dir = os.path.join(directory, "correlation_data")
+    os.makedirs(output_dir, exist_ok=True)
+    base = os.path.splitext(os.path.basename(filename))[0]
+    return os.path.join(output_dir, base)
+
+
+def save_spectrum_tensor(
+    k_centers,
+    Phi11,
+    Phi22,
+    Phi33,
+    Re_Phi12,
+    Re_Phi13,
+    Re_Phi23,
+    Abs_Phi12,
+    Abs_Phi13,
+    Abs_Phi23,
+    filename,
+):
+    """Save shell-binned spectrum tensor.
+
+    Output file: correlation_data/<base>_spectrum_tensor.txt
+    """
+    stem = _correlation_output_stem(filename)
+    summary = np.column_stack(
+        (
+            np.asarray(k_centers, dtype=np.float64),
+            np.asarray(Phi11, dtype=np.float64),
+            np.asarray(Phi22, dtype=np.float64),
+            np.asarray(Phi33, dtype=np.float64),
+            np.asarray(Re_Phi12, dtype=np.float64),
+            np.asarray(Re_Phi13, dtype=np.float64),
+            np.asarray(Re_Phi23, dtype=np.float64),
+            np.asarray(Abs_Phi12, dtype=np.float64),
+            np.asarray(Abs_Phi13, dtype=np.float64),
+            np.asarray(Abs_Phi23, dtype=np.float64),
+        )
+    )
+
+    header_labels = [
+        "k",
+        "Phi11",
+        "Phi22",
+        "Phi33",
+        "Re_Phi12",
+        "Re_Phi13",
+        "Re_Phi23",
+        "Abs_Phi12",
+        "Abs_Phi13",
+        "Abs_Phi23",
+    ]
+    output_path = f"{stem}_spectrum_tensor.txt"
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(", ".join(f"{label:>23s}" for label in header_labels) + "\n")
+        for row in summary:
+            handle.write(", ".join(f"{value:>23.16e}" for value in row) + "\n")
+    return output_path
+
+
+def save_correlation_functions(
+    fg,
+    taylor_microscales,
+    integral_length_scales,
+    filename,
+    step_number,
+    time_value,
+):
+    """Save f(r), g(r), axis components, and derived length scales.
+
+    Output file: correlation_data/<base>_correlations.txt
+    """
+    stem = _correlation_output_stem(filename)
+    output_path = f"{stem}_correlations.txt"
+
+    r = fg["r"]
+    summary = np.column_stack(
+        (
+            np.asarray(r, dtype=np.float64),
+            np.asarray(fg["f"], dtype=np.float64),
+            np.asarray(fg["g"], dtype=np.float64),
+            np.asarray(fg["f_raw_avg"], dtype=np.float64),
+            np.asarray(fg["g_raw_avg"], dtype=np.float64),
+            np.asarray(fg["f_x"], dtype=np.float64),
+            np.asarray(fg["f_y"], dtype=np.float64),
+            np.asarray(fg["f_z"], dtype=np.float64),
+            np.asarray(fg["f_x_norm"], dtype=np.float64),
+            np.asarray(fg["f_y_norm"], dtype=np.float64),
+            np.asarray(fg["f_z_norm"], dtype=np.float64),
+            np.asarray(fg["g_x"], dtype=np.float64),
+            np.asarray(fg["g_y"], dtype=np.float64),
+            np.asarray(fg["g_z"], dtype=np.float64),
+            np.asarray(fg["g_x_norm"], dtype=np.float64),
+            np.asarray(fg["g_y_norm"], dtype=np.float64),
+            np.asarray(fg["g_z_norm"], dtype=np.float64),
+        )
+    )
+
+    header_labels = [
+        "r",
+        "f_norm",
+        "g_norm",
+        "f_raw_avg",
+        "g_raw_avg",
+        "f_x",
+        "f_y",
+        "f_z",
+        "f_x_norm",
+        "f_y_norm",
+        "f_z_norm",
+        "g_x",
+        "g_y",
+        "g_z",
+        "g_x_norm",
+        "g_y_norm",
+        "g_z_norm",
+    ]
+
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(f"# Step: {step_number}, Time: {float(time_value):.16e}\n")
+        handle.write("# Correlations use fluctuation velocity u' = u - <u> via zero-mode removal.\n")
+
+        lam_f = taylor_microscales["lambda_f"]
+        lam_g = taylor_microscales["lambda_g"]
+        d2f0 = taylor_microscales["d2f0"]
+        d2g0 = taylor_microscales["d2g0"]
+        handle.write(f"# Taylor microscale lambda_f: {float(lam_f):.16e}\n")
+        handle.write(f"# Taylor microscale lambda_g: {float(lam_g):.16e}\n")
+        handle.write(f"# f''(0): {float(d2f0):.16e}\n")
+        handle.write(f"# g''(0): {float(d2g0):.16e}\n")
+
+        for tag in ("x", "y", "z"):
+            fc = taylor_microscales["f_components"][tag]
+            handle.write(
+                f"# lambda_f_{tag}: {float(fc['lambda']):.16e}"
+                f"  (c0={float(fc['c0']):.16e}, status={fc['status']})\n"
+            )
+        handle.write(
+            f"# lambda_f_component_avg: "
+            f"{float(taylor_microscales['f_component_avg']):.16e}\n"
+        )
+        for tag in ("x", "y", "z"):
+            gc = taylor_microscales["g_components"][tag]
+            handle.write(
+                f"# lambda_g_{tag}: {float(gc['lambda']):.16e}"
+                f"  (c0={float(gc['c0']):.16e}, status={gc['status']})\n"
+            )
+        handle.write(
+            f"# lambda_g_component_avg: "
+            f"{float(taylor_microscales['g_component_avg']):.16e}\n"
+        )
+        if (
+            np.isfinite(lam_f) and np.isfinite(lam_g)
+            and lam_g != 0.0
+        ):
+            handle.write(
+                f"# lambda_f^2 / lambda_g^2: "
+                f"{(float(lam_f) / float(lam_g)) ** 2:.16e}\n"
+            )
+
+        L_f = integral_length_scales["L_f"]
+        L_g = integral_length_scales["L_g"]
+        handle.write(f"# Integral length scale L_f: {float(L_f):.16e}\n")
+        handle.write(f"# Integral length scale L_g: {float(L_g):.16e}\n")
+        if "L_f_spectral" in integral_length_scales:
+            handle.write(
+                "# Spectral longitudinal integral scale "
+                "L_f_spectral = pi/(2<u1'^2>) * integral E(k)/k dk: "
+                f"{float(integral_length_scales['L_f_spectral']):.16e}\n"
+            )
+        if np.isfinite(L_f) and np.isfinite(L_g) and L_g != 0.0:
+            handle.write(
+                f"# L_f / L_g: {float(L_f) / float(L_g):.16e}\n"
+            )
+        for tag in ("x", "y", "z"):
+            lc = integral_length_scales["f_components"][tag]
+            handle.write(
+                f"# L_f_{tag}: {float(lc['L']):.16e} (status={lc['status']})\n"
+            )
+        handle.write(
+            f"# L_f_component_avg: "
+            f"{float(integral_length_scales['f_component_avg']):.16e}\n"
+        )
+        for tag in ("x", "y", "z"):
+            lc = integral_length_scales["g_components"][tag]
+            handle.write(
+                f"# L_g_{tag}: {float(lc['L']):.16e} (status={lc['status']})\n"
+            )
+        handle.write(
+            f"# L_g_component_avg: "
+            f"{float(integral_length_scales['g_component_avg']):.16e}\n"
+        )
+
+        handle.write(
+            "# " + ", ".join(f"{label:>23s}" for label in header_labels) + "\n"
+        )
+        for row in summary:
+            handle.write(", ".join(f"{value:>23.16e}" for value in row) + "\n")
+
+    return output_path

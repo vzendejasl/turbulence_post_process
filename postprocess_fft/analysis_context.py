@@ -63,6 +63,7 @@ class DistributedAnalysisContext:
         self._k_squared = None
         self._nonzero_mask = None
         self._velocity_modes = None
+        self._fluctuation_velocity_modes = None
         self._vorticity_components = None
         self._velocity_gradients = None
         self._dataset_cache: dict[str, np.ndarray] = {}
@@ -182,6 +183,22 @@ class DistributedAnalysisContext:
                 forward_field(self.plan, self.local_vz).reshape(self.local_shape, order="C"),
             )
         return self._velocity_modes
+
+    def get_fluctuation_velocity_modes(self):
+        """Return cached velocity modes with the zero mode removed.
+
+        Zeroing the k=0 mode is equivalent to subtracting the global mean in
+        physical space, while avoiding an extra distributed real-space pass.
+        """
+        if self._fluctuation_velocity_modes is None:
+            vx_k, vy_k, vz_k = self.get_velocity_modes()
+            nonzero_mask = self.get_nonzero_mask()
+            self._fluctuation_velocity_modes = (
+                np.where(nonzero_mask, vx_k, 0.0 + 0.0j),
+                np.where(nonzero_mask, vy_k, 0.0 + 0.0j),
+                np.where(nonzero_mask, vz_k, 0.0 + 0.0j),
+            )
+        return self._fluctuation_velocity_modes
 
     def get_vorticity_components(self):
         if self._vorticity_components is None:

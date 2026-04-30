@@ -15,15 +15,25 @@ from .common import global_mean_energy
 from .common import heffte
 from .common import zero_near_zero
 from .common import zero_near_zero_scalar
+from .correlations import compute_diagonal_correlation_axes
+from .correlations import compute_integral_length_scales
+from .correlations import compute_longitudinal_integral_scale_from_spectrum
+from .correlations import compute_spectrum_tensor_diagonal
+from .correlations import compute_spectrum_tensor_offdiagonal
+from .correlations import compute_taylor_microscales
+from .correlations import extract_f_g
 from .io import detect_header_lines
 from .io import plot_spectra
 from .io import read_data_file_chunked
 from .io import read_data_file_header
 from .io import read_structured_local_dataset
 from .io import read_structured_local_fields
+from .io import plot_correlation_functions
 from .io import plot_qr_joint_pdf
 from .io import save_component_spectra
+from .io import save_correlation_functions
 from .io import save_qr_joint_pdf
+from .io import save_spectrum_tensor
 from .io import save_structure_functions
 from .io import save_spectra
 from .io import structured_h5_metadata
@@ -68,6 +78,7 @@ def analyze_file_parallel(
     visualize=False,
     compute_structure_functions=False,
     structure_function_full_domain=True,
+    compute_correlations=False,
     qr_joint_pdf_bins=256,
     thermo_gamma=1.4,
     analysis_context=None,
@@ -295,6 +306,7 @@ def analyze_file_parallel(
         if root:
             shell_r_values, shell_s3_values, shell_s3_counts = shell_result
     vx_k, vy_k, vz_k = analysis_context.get_velocity_modes()
+    fluct_vx_k = fluct_vy_k = fluct_vz_k = None
 
     k_dot_v = KX * vx_k + KY * vy_k + KZ * vz_k
     projection = np.zeros_like(k_dot_v, dtype=np.complex128)
@@ -338,6 +350,58 @@ def analyze_file_parallel(
         print()
     verify_decomposition(plan, local_shape, KX, KY, KZ, vx_c_k, vy_c_k, vz_c_k, vx_r_k, vy_r_k, vz_r_k, comm, root)
 
+    # --- Velocity correlation tensor and f(r), g(r) ---
+    fg_result = None
+    taylor_microscales = None
+    integral_length_scales = None
+    tensor_diag = None
+    tensor_offdiag = None
+
+    if compute_correlations:
+        if root:
+            print()
+            print("Computing fluctuation-based velocity spectrum tensor and two-point correlations...")
+
+        fluct_vx_k, fluct_vy_k, fluct_vz_k = analysis_context.get_fluctuation_velocity_modes()
+        tensor_diag = compute_spectrum_tensor_diagonal(
+            fluct_vx_k, fluct_vy_k, fluct_vz_k, shape, local_box, comm,
+        )
+        tensor_offdiag = compute_spectrum_tensor_offdiagonal(
+            fluct_vx_k, fluct_vy_k, fluct_vz_k, shape, local_box, comm,
+        )
+
+        if root:
+            print("Computing two-point fluctuation correlations R_ii(r) via backward FFT...")
+        correlation_axes = compute_diagonal_correlation_axes(
+            plan, fluct_vx_k, fluct_vy_k, fluct_vz_k, shape, local_shape, local_box,
+            dx, dy, dz, comm,
+        )
+
+        fg_result = extract_f_g(correlation_axes)
+        taylor_microscales = compute_taylor_microscales(fg_result)
+        integral_length_scales = compute_integral_length_scales(fg_result)
+
+        if root:
+            lf = taylor_microscales["lambda_f"]
+            lg = taylor_microscales["lambda_g"]
+            Lf = integral_length_scales["L_f"]
+            Lg = integral_length_scales["L_g"]
+            Lf_spectral = integral_length_scales.get("L_f_spectral")
+            print(f"  Taylor microscale lambda_f: {lf:.8f}")
+            print(f"  Taylor microscale lambda_g: {lg:.8f}")
+            if np.isfinite(lf) and np.isfinite(lg) and lg > 0.0:
+                print(f"  lambda_g / lambda_f: {lg / lf:.8f}")
+                print(f"  lambda_f^2 / lambda_g^2: {(lf / lg) ** 2:.8f}")
+            print(f"  Integral length scale L_f: {Lf:.8f}")
+            print(f"  Integral length scale L_g: {Lg:.8f}")
+            if Lf_spectral is not None and np.isfinite(Lf_spectral):
+                print(
+                    "  Spectral longitudinal integral scale "
+                    f"L_f_spectral: {Lf_spectral:.8f}"
+                )
+            if np.isfinite(Lf) and np.isfinite(Lg) and Lg != 0.0:
+                print(f"  L_f / L_g: {Lf / Lg:.8f}")
+
     if root:
         print()
         print("Computing distributed energy spectra...")
@@ -350,6 +414,7 @@ def analyze_file_parallel(
         comm,
     )
     E_total = None if E_total_x is None else E_total_x + E_total_y + E_total_z
+
     _, E_comp = compute_energy_spectrum_from_modes(vx_c_k, vy_c_k, vz_c_k, shape, local_box, comm)
     _, E_rot = compute_energy_spectrum_from_modes(vx_r_k, vy_r_k, vz_r_k, shape, local_box, comm)
     _, Enst_x, Enst_y, Enst_z, total_enstrophy = compute_enstrophy_component_spectra_from_modes(
@@ -503,6 +568,18 @@ def analyze_file_parallel(
         strain_enstrophy_rel_error = zero_near_zero_scalar(strain_enstrophy_rel_error)
         strain_vorticity_rel_error = zero_near_zero_scalar(strain_vorticity_rel_error)
         third_order_result = None
+        if compute_correlations and tensor_diag is not None and integral_length_scales is not None and fg_result is not None:
+            _, Phi11_corr, Phi22_corr, Phi33_corr = tensor_diag
+            e_total_corr_phy_density = zero_near_zero(
+                0.5 * (np.asarray(Phi11_corr, dtype=np.float64) + np.asarray(Phi22_corr, dtype=np.float64) + np.asarray(Phi33_corr, dtype=np.float64))
+                / delta_k_phy
+            )
+            longitudinal_variance = float(fg_result["f_raw_avg"][0])
+            integral_length_scales["L_f_spectral"] = compute_longitudinal_integral_scale_from_spectrum(
+                k_centers_phy,
+                e_total_corr_phy_density,
+                longitudinal_variance,
+            )
         if compute_structure_functions:
             max_r_index = shape[0] if structure_function_full_domain else shape[0] // 2
             r_values = np.arange(max_r_index + 1, dtype=np.float64) * float(dx)
@@ -652,6 +729,37 @@ def analyze_file_parallel(
             Enst_z,
             filename,
         )
+        if compute_correlations and tensor_diag is not None:
+            _, Phi11, Phi22, Phi33 = tensor_diag
+            _, Re_Phi12, Re_Phi13, Re_Phi23, Abs_Phi12, Abs_Phi13, Abs_Phi23 = tensor_offdiag
+            tensor_path = save_spectrum_tensor(
+                k_centers,
+                zero_near_zero(Phi11),
+                zero_near_zero(Phi22),
+                zero_near_zero(Phi33),
+                zero_near_zero(Re_Phi12),
+                zero_near_zero(Re_Phi13),
+                zero_near_zero(Re_Phi23),
+                zero_near_zero(Abs_Phi12),
+                zero_near_zero(Abs_Phi13),
+                zero_near_zero(Abs_Phi23),
+                filename,
+            )
+            correlation_path = save_correlation_functions(
+                fg_result,
+                taylor_microscales,
+                integral_length_scales,
+                filename,
+                step_number,
+                time_value,
+            )
+            print(f"  Spectrum tensor saved to: {tensor_path}")
+            print(f"  Correlation functions saved to: {correlation_path}")
+            corr_plot_paths = plot_correlation_functions(
+                fg_result, taylor_microscales, integral_length_scales, filename,
+            )
+            for p in corr_plot_paths:
+                print(f"  Correlation plot saved to: {p}")
         if compute_structure_functions:
             structure_function_path = save_structure_functions(
                 r_values,
@@ -740,6 +848,9 @@ def analyze_file_parallel(
             "qr_joint_pdf_h5": qr_h5_path,
             "qr_joint_pdf_pdf": qr_pdf_path,
             "qr_joint_pdf_bins": int(qr_joint_pdf_bins),
+            "fg_result": fg_result,
+            "taylor_microscales": taylor_microscales,
+            "integral_length_scales": integral_length_scales,
         }
 
     if return_analysis_context:
@@ -802,6 +913,11 @@ Examples:
     )
     parser.set_defaults(structure_function_full_box=True)
     parser.add_argument(
+        "--correlations",
+        action="store_true",
+        help="Compute velocity correlation tensor Phi_ij(k), f(r), g(r), and derived length scales.",
+    )
+    parser.add_argument(
         "--gamma",
         type=float,
         default=1.4,
@@ -827,6 +943,7 @@ Examples:
             visualize=args.visualize,
             compute_structure_functions=args.structure_functions,
             structure_function_full_domain=args.structure_function_full_box,
+            compute_correlations=args.correlations,
             qr_joint_pdf_bins=args.qr_bins,
             thermo_gamma=args.gamma,
         )
