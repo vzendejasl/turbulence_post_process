@@ -761,6 +761,7 @@ def analyze_file_parallel(
                 filename,
                 step_number,
                 time_value,
+                L_int_spectral=L_int_spectral,
             )
             print(f"  Spectrum tensor saved to: {tensor_path}")
             print(f"  Correlation functions saved to: {correlation_path}")

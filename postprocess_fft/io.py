@@ -1234,6 +1234,7 @@ def save_correlation_functions(
     filename,
     step_number,
     time_value,
+    L_int_spectral=None,
 ):
     """Save f(r), g(r), axis components, and derived length scales.
 
@@ -1336,6 +1337,11 @@ def save_correlation_functions(
                 "# Spectral longitudinal integral scale "
                 "L_f_spectral = pi/(2<u1'^2>) * integral E(k)/k dk: "
                 f"{float(integral_length_scales['L_f_spectral']):.16e}\n"
+            )
+        if L_int_spectral is not None:
+            handle.write(
+                "# Integral length scale L_int (spectral, pi/2 * sum(E(k)/k_phy) / sum(E(k))): "
+                f"{float(L_int_spectral):.16e}\n"
             )
         if np.isfinite(L_f) and np.isfinite(L_g) and L_g != 0.0:
             handle.write(
