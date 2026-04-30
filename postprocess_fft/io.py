@@ -303,7 +303,7 @@ def save_spectra(
         handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
         if L_int_spectral is not None:
             handle.write(
-                "# Integral length scale L_int (spectral, pi/2 * sum(E(k)) / sum(E(k)/k_phy)): "
+                "# Integral length scale L_int (spectral, pi/2 * sum(E(k)/k_phy) / sum(E(k))): "
                 f"{float(L_int_spectral):.16e}\n"
             )
         if sijsij_mean is not None:
@@ -387,7 +387,7 @@ def save_spectra(
         handle.write(f"# Total Enstrophy: {float(total_enstrophy):.16e}\n")
         if L_int_spectral is not None:
             handle.write(
-                "# Integral length scale L_int (spectral, pi/2 * sum(E(k)) / sum(E(k)/k_phy)): "
+                "# Integral length scale L_int (spectral, pi/2 * sum(E(k)/k_phy) / sum(E(k))): "
                 f"{float(L_int_spectral):.16e}\n"
             )
         if sijsij_mean is not None:

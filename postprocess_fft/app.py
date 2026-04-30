@@ -680,8 +680,8 @@ def analyze_file_parallel(
         _k_phy_masked = np.asarray(k_centers_phy, dtype=np.float64)[_k_phy_mask]
         _sum_E = float(np.sum(_E_masked, dtype=np.float64))
         _sum_E_over_k = float(np.sum(_E_masked / _k_phy_masked, dtype=np.float64))
-        L_int_spectral = (np.pi / 2.0) * _sum_E / _sum_E_over_k if _sum_E_over_k > 1.0e-30 else 0.0
-        print(f"  Integral length scale L_int (spectral, pi/2 * sum(E(k)) / sum(E(k)/k)): {L_int_spectral:.8f}")
+        L_int_spectral = (np.pi / 2.0) * _sum_E_over_k / _sum_E if _sum_E > 1.0e-30 else 0.0
+        print(f"  Integral length scale L_int (spectral, pi/2 * sum(E(k)/k) / sum(E(k))): {L_int_spectral:.8f}")
 
         save_spectra(
             k_centers,
